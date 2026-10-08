@@ -5,8 +5,6 @@ import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.ticket.entity.Ticket;
-import com.opsdesk.user.entity.User;
-import com.opsdesk.user.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -55,11 +53,9 @@ import java.util.Set;
 public class TicketDataScopeHelper {
 
     private final DepartmentScopeHelper departmentScopeHelper;
-    private final UserService userService;
 
-    public TicketDataScopeHelper(DepartmentScopeHelper departmentScopeHelper, UserService userService) {
+    public TicketDataScopeHelper(DepartmentScopeHelper departmentScopeHelper) {
         this.departmentScopeHelper = departmentScopeHelper;
-        this.userService = userService;
     }
 
     // ==================== 对外：列表查询追加条件 ====================
@@ -167,7 +163,7 @@ public class TicketDataScopeHelper {
             return new Scope(ScopeKind.ALL, user.userId(), List.of());
         }
         if (roles.contains(Role.AGENT)) {
-            return new Scope(ScopeKind.AGENT, user.userId(), myDepartmentSubtreeIds(user.userId()));
+            return new Scope(ScopeKind.AGENT, user.userId(), myDepartmentSubtreeIds(user));
         }
         if (roles.contains(Role.EMPLOYEE)) {
             return new Scope(ScopeKind.SELF, user.userId(), List.of());
@@ -179,21 +175,18 @@ public class TicketDataScopeHelper {
     }
 
     /**
-     * 取当前用户所属部门，再展开成子树 id 列表。
+     * 把当前用户所属部门展开成子树 id 列表。
      *
-     * <p>⚠️ {@code UserContext.CurrentUser} 里<b>没有 departmentId</b>
-     * （D1-02 定的是 userId / jti / roles / permissions 四项），所以这里要查一次库。
-     * 只有 AGENT 会走到，且一次请求一次，不进循环。
-     * <p>后续优化方向（不在本单）：把 departmentId 一起放进 {@code auth:perms:{userId}} 的
-     * 缓存载荷，拦截器顺手带进 {@code UserContext}，就能省掉这条查询。
+     * <p>{@code departmentId} 直接从 {@code UserContext.CurrentUser} 取 —— 它由鉴权拦截器
+     * 从权限缓存 {@code auth:perms:{userId}} 里带出来（D2-04 优化），
+     * 所以这里<b>一次库都不用查</b>。
+     * <p>只缓存 {@code departmentId}、<b>不缓存子树本身</b>：子树会随部门移动（D1-04）变化，
+     * 而权限缓存只在角色/状态变更时失效 —— 缓存子树必然读到脏数据。子树每次现算（1 条，命中 idx_dept_path）。
+     *
+     * @return 未设部门 → 空列表（调用方 {@link #applyAgentScope} 会据此跳过 ③）
      */
-    private List<Long> myDepartmentSubtreeIds(Long userId) {
-        // 按主键查，最多一行；getOne(wrapper) 不带 false，多行会抛而不是静默取第一行
-        // （known-traps #2：getOne(w, false) 是 fail-open）
-        User user = userService.getOne(new LambdaQueryWrapper<User>()
-                .select(User::getDepartmentId)
-                .eq(User::getId, userId));
-        Long departmentId = user == null ? null : user.getDepartmentId();
+    private List<Long> myDepartmentSubtreeIds(UserContext.CurrentUser user) {
+        Long departmentId = user.departmentId();
         return departmentId == null ? List.of() : departmentScopeHelper.subtreeIds(departmentId);
     }
 

@@ -115,12 +115,17 @@ public final class UserContext {
     /**
      * 当前登录用户。
      *
-     * @param userId      用户 id（来自 JWT 的 {@code sub}）
-     * @param jti         token 唯一标识（来自 JWT 的 {@code jti}）
-     * @param roles       角色集合，允许 null（会被归一成空集合）
-     * @param permissions 权限码集合，允许 null（会被归一成空集合）
+     * @param userId       用户 id（来自 JWT 的 {@code sub}）
+     * @param jti          token 唯一标识（来自 JWT 的 {@code jti}）
+     * @param roles        角色集合，允许 null（会被归一成空集合）
+     * @param permissions  权限码集合，允许 null（会被归一成空集合）
+     * @param departmentId 所属部门 id，允许 null（未设部门）。
+     *                     <b>数据范围要用它</b>：§8.3 的 AGENT 条件 ③「本部门（含子部门）创建的工单」
+     *                     要先知道「我的部门」才能展开子树。它由鉴权拦截器从权限缓存
+     *                     {@code auth:perms:{userId}} 里带出来，所以请求期<b>不需要再查一次库</b>。
      */
-    public record CurrentUser(Long userId, String jti, Set<Role> roles, Set<String> permissions) {
+    public record CurrentUser(Long userId, String jti, Set<Role> roles, Set<String> permissions,
+                              Long departmentId) {
 
         public CurrentUser {
             roles = roles == null ? Collections.emptySet() : Set.copyOf(roles);

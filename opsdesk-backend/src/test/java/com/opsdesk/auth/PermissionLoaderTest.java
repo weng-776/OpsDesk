@@ -171,7 +171,7 @@ class PermissionLoaderTest {
     @DisplayName("缓存里有未知角色码 → 跳过而不是抛异常")
     void 未知角色码被跳过() {
         redisTemplate.opsForValue().set(cacheKey,
-                "{\"roles\":[\"NOT_A_ROLE\",\"AGENT\"],\"permissions\":[\"ticket:list\"]}",
+                "{\"v\":2,\"roles\":[\"NOT_A_ROLE\",\"AGENT\"],\"permissions\":[\"ticket:list\"]}",
                 Duration.ofMinutes(10));
 
         UserAuthContextLoader.UserAuthContext context = permissionLoader.load(userId);
@@ -184,7 +184,7 @@ class PermissionLoaderTest {
     @DisplayName("roles / permissions 为 null → 归一成空集合，不返回 null")
     void 字段为null时归一成空集合() {
         redisTemplate.opsForValue().set(cacheKey,
-                "{\"roles\":null,\"permissions\":null}", Duration.ofMinutes(10));
+                "{\"v\":2,\"roles\":null,\"permissions\":null}", Duration.ofMinutes(10));
 
         UserAuthContextLoader.UserAuthContext context = permissionLoader.load(userId);
 
@@ -201,6 +201,53 @@ class PermissionLoaderTest {
 
         assertThatCode(() -> permissionLoader.load(userId)).doesNotThrowAnyException();
         assertThat(permissionLoader.load(userId).roles()).containsExactly(Role.AGENT);
+    }
+
+    // ==================== 载荷里的 departmentId 与版本号（D2-04 优化） ====================
+
+    @Test
+    @DisplayName("载荷带 departmentId：回源时带上、缓存命中时读得出来（请求期不必再查 user 表）")
+    void 载荷带部门ID并能往返() {
+        Long departmentId = departmentIdOfProbeUser();
+        assertThat(departmentId).as("前置：探针用户有部门").isNotNull();
+
+        UserAuthContextLoader.UserAuthContext first = permissionLoader.load(userId);
+        assertThat(first.departmentId()).as("回源时带上部门").isEqualTo(departmentId);
+
+        String json = redisTemplate.opsForValue().get(cacheKey);
+        assertThat(json).as("载荷 JSON 里带了版本号与部门")
+                .contains("\"v\":2").contains("\"departmentId\":" + departmentId);
+
+        assertThat(permissionLoader.load(userId).departmentId())
+                .as("第二次命中缓存 → 部门照样读得出来").isEqualTo(departmentId);
+    }
+
+    @Test
+    @DisplayName("旧版本载荷（v1，无 v / departmentId）→ 当作代沟回源并覆盖，绝不静默当成「没部门」")
+    void 旧版本载荷自愈() {
+        // 模拟 D2-04 优化之前写进去的 v1 载荷：只有 roles + permissions
+        redisTemplate.opsForValue().set(cacheKey,
+                "{\"roles\":[\"AGENT\"],\"permissions\":[\"ticket:list\"]}", Duration.ofMinutes(10));
+
+        Long departmentId = departmentIdOfProbeUser();
+        UserAuthContextLoader.UserAuthContext context = permissionLoader.load(userId);
+
+        assertThat(context.departmentId())
+                .as("旧载荷没有 departmentId，必须回源拿到真实值 —— 若为 null，"
+                        + "AGENT 会看不到本部门工单（§8.1 的受理盲区）")
+                .isEqualTo(departmentId);
+        assertThat(context.permissions())
+                .as("确实是回源了，而不是沿用了旧载荷里的那 1 条权限")
+                .hasSizeGreaterThan(1);
+
+        assertThat(redisTemplate.opsForValue().get(cacheKey))
+                .as("已被覆盖成新格式，下一个请求恢复正常").contains("\"v\":2")
+                .contains("\"departmentId\":" + departmentId);
+    }
+
+    private Long departmentIdOfProbeUser() {
+        return jdbcTemplate.queryForObject(
+                "SELECT department_id FROM `user` WHERE id = ?", Long.class, userId);
     }
 
     // ==================== 边界 ====================

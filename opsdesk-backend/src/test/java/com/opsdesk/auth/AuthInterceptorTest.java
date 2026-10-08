@@ -13,6 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
@@ -52,6 +54,10 @@ class AuthInterceptorTest {
 
     @Autowired
     private StringRedisTemplate redisTemplate;
+
+    /** 直接驱动拦截器用（验证它往 UserContext 里放了什么） */
+    @Autowired
+    private AuthInterceptor authInterceptor;
 
     /** 每次测试用一个独立 jti，避免测试之间互相污染黑名单 */
     private String jti;
@@ -186,6 +192,25 @@ class AuthInterceptorTest {
     }
 
     // ==================== 白名单 ====================
+
+    @Test
+    @DisplayName("拦截器把 departmentId 一并放进 UserContext（D2-04 优化的关键接线）")
+    void 拦截器把部门放进UserContext() throws Exception {
+        // 这条用例专门守住「PermissionLoader → UserAuthContextLoader → AuthInterceptor →
+        // UserContext」这条链：链上任何一环忘了传 departmentId，TicketDataScopeHelper
+        // 的 AGENT 条件 ③ 就会静默失效（看不到本部门工单），而单测各自都还是绿的
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+
+        assertThat(authInterceptor.preHandle(request, new MockHttpServletResponse(), new Object()))
+                .isTrue();
+
+        UserContext.CurrentUser currentUser = UserContext.get();
+        assertThat(currentUser).as("拦截器应已落身份").isNotNull();
+        assertThat(currentUser.departmentId())
+                .as("agent_zhang(id=2) 在技术部(id=2) —— 这个值必须从权限缓存里带出来")
+                .isEqualTo(2L);
+    }
 
     @Test
     @DisplayName("白名单：/api/auth/login 不带 token 也能进（40100 来自登录逻辑而非拦截器）")

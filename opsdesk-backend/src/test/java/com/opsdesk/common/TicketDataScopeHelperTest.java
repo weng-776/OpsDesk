@@ -180,7 +180,7 @@ class TicketDataScopeHelperTest {
     @DisplayName("没有任何角色的用户什么都看不到（fail-closed，绝不能因为拿不到角色就放行）")
     void 无角色时不可见任何数据() {
         UserContext.CurrentUser noRole =
-                new UserContext.CurrentUser(999_999L, "test-jti", Set.of(), Set.of());
+                new UserContext.CurrentUser(999_999L, "test-jti", Set.of(), Set.of(), null);
 
         assertThat(visibleTicketIds(noRole)).isEmpty();
         assertThat(dataScopeHelper.isVisible(ticketService.getById(1L), noRole)).isFalse();
@@ -217,7 +217,7 @@ class TicketDataScopeHelperTest {
                 userOf(AGENT_LI, Role.AGENT),
                 userOf(EMP_WANG, Role.EMPLOYEE),
                 userOf(EMP_ZHAO, Role.EMPLOYEE),
-                new UserContext.CurrentUser(999_999L, "test-jti", Set.of(), Set.of()));
+                new UserContext.CurrentUser(999_999L, "test-jti", Set.of(), Set.of(), null));
 
         for (UserContext.CurrentUser user : users) {
             Set<Long> visible = new HashSet<>(visibleTicketIds(user));
@@ -259,8 +259,24 @@ class TicketDataScopeHelperTest {
 
     // ==================== 工具 ====================
 
+    /**
+     * 构造 {@code CurrentUser}。
+     *
+     * <p>{@code departmentId} 从库里读真实值 —— 这样调用点不必逐个写死部门，
+     * 而且测的是「真实部门 → 子树 → 可见范围」的完整链路。
+     * <p>注意：这**只发生在测试的装配阶段**。生产链路上 {@code TicketDataScopeHelper}
+     * 已经不再注入 {@code UserService}（D2-04 优化），结构上就不可能查 user 表。
+     */
     private UserContext.CurrentUser userOf(Long userId, Role... roles) {
-        return new UserContext.CurrentUser(userId, "test-jti-" + userId, Set.of(roles), Set.of());
+        return new UserContext.CurrentUser(userId, "test-jti-" + userId, Set.of(roles), Set.of(),
+                departmentIdOf(userId));
+    }
+
+    /** 读用户的 department_id；用户不存在 / 未设部门 → null */
+    private Long departmentIdOf(Long userId) {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "SELECT department_id FROM `user` WHERE id = ?", Long.class, userId);
+        return ids.isEmpty() ? null : ids.get(0);
     }
 
     /** 用 applyScope 真查一次库，返回可见工单 id（升序） */

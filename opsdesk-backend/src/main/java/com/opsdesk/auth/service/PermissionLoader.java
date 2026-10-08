@@ -52,6 +52,24 @@ public class PermissionLoader {
     /** 缓存 TTL（§23.4 权威：10 分钟） */
     public static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
+    /**
+     * 缓存载荷格式版本。
+     *
+     * <p><b>改动 {@link CachedPermissions} 的字段时把它 +1</b>：读到版本不符的旧载荷
+     * 会被当作「脏数据」丢弃并回源查库、随后覆盖成新格式 —— 也就是<b>自愈</b>，
+     * 不需要任何运维动作（不用手动清 {@code auth:perms:*}）。
+     *
+     * <p>为什么要这么做：载荷加字段（如 D2-04 优化加的 {@code departmentId}）后，
+     * 旧缓存反序列化出来新字段是 {@code null}，会被当成「这个用户没有部门」——
+     * 症状是 <b>AGENT 暂时看不到本部门的工单</b>（§8.1 那种受理盲区），
+     * 且不报错、只在 TTL（10 分钟）内悄悄错。
+     * 版本号把这种「格式代沟」变成一次正常的缓存未命中。
+     *
+     * <p>v1：{@code {roles, permissions}}
+     * <p>v2：{@code {v, roles, permissions, departmentId}}（D2-04 优化）
+     */
+    private static final int PAYLOAD_VERSION = 2;
+
     /** 日志里回显脏数据的最大长度，避免一条超长脏值把日志刷爆 */
     private static final int DIRTY_VALUE_MAX_LOG_LENGTH = 120;
 
@@ -140,7 +158,15 @@ public class PermissionLoader {
         }
 
         try {
-            return toAuthContext(objectMapper.readValue(json, CachedPermissions.class));
+            CachedPermissions parsed = objectMapper.readValue(json, CachedPermissions.class);
+            if (parsed.v() != PAYLOAD_VERSION) {
+                // 旧格式载荷（例如加 departmentId 之前写进去的）—— 不是脏数据，是「代沟」。
+                // 回源 + 覆盖成新格式，下一个请求就恢复正常
+                log.info("[权限缓存] 载荷版本 {} 与当前 {} 不符，回源并覆盖。userId={}",
+                        parsed.v(), PAYLOAD_VERSION, userId);
+                return null;
+            }
+            return toAuthContext(parsed);
         }
         catch (Exception ex) {
             // 脏数据（非法 JSON / 结构对不上）→ 丢弃并回源，不抛异常（工单要点）
@@ -153,8 +179,10 @@ public class PermissionLoader {
     /** 回填缓存；写失败只记 WARN，不影响本次返回 */
     private void writeCache(Long userId, UserAuthContextLoader.UserAuthContext context) {
         CachedPermissions payload = new CachedPermissions(
+                PAYLOAD_VERSION,
                 context.roles().stream().sorted().map(Role::name).toList(),
-                List.copyOf(context.permissions()));
+                List.copyOf(context.permissions()),
+                context.departmentId());
         try {
             redisTemplate.opsForValue().set(key(userId),
                     objectMapper.writeValueAsString(payload), CACHE_TTL);
@@ -169,6 +197,8 @@ public class PermissionLoader {
      *
      * <p>容错三件事：{@code roles} / {@code permissions} 为 null 时归一成空集合；
      * 未知角色码（枚举里已删除的历史值）直接跳过而不是抛异常；空白权限码丢弃。
+     * <p>{@code departmentId} 原样透传（{@code null} = 该用户未设部门，是合法值，
+     * 不能当成「缺字段」—— 那是靠 {@code v} 版本号区分的）。
      */
     private UserAuthContextLoader.UserAuthContext toAuthContext(CachedPermissions payload) {
         Set<Role> roles = new LinkedHashSet<>();
@@ -185,7 +215,7 @@ public class PermissionLoader {
                 }
             }
         }
-        return new UserAuthContextLoader.UserAuthContext(roles, permissions);
+        return new UserAuthContextLoader.UserAuthContext(roles, permissions, payload.departmentId());
     }
 
     private String key(Long userId) {
@@ -202,7 +232,16 @@ public class PermissionLoader {
      *
      * <p>刻意用字符串码而不是 {@code Role} 枚举：缓存是跨版本的持久数据，
      * 存 code 才不会因为枚举重命名 / 重排序而读不出来。
+     *
+     * <p>{@code departmentId} 是 D2-04 优化加进来的：数据范围 §8.3 的 AGENT 条件 ③
+     * 需要「我的部门」，顺手跟权限一起缓存，请求期就不必再单独查一次 {@code user} 表。
+     * <p>⚠️ 字段变化必须同步 +1 {@link #PAYLOAD_VERSION}。
+     *
+     * @param v            载荷格式版本（见 {@link #PAYLOAD_VERSION}）
+     * @param roles        角色码列表
+     * @param permissions  权限码列表
+     * @param departmentId 所属部门 id，可为 {@code null}
      */
-    record CachedPermissions(List<String> roles, List<String> permissions) {
+    record CachedPermissions(int v, List<String> roles, List<String> permissions, Long departmentId) {
     }
 }

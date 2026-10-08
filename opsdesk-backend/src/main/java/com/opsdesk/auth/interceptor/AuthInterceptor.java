@@ -131,7 +131,8 @@ public class AuthInterceptor implements HandlerInterceptor {
         // ==================== 危险分界线：以下两句不得失败，之后不得再插任何语句 ====================
         // ⑤ 落身份（必须是本方法最后一件「有语义」的事，理由见类注释）
         UserContext.set(new UserContext.CurrentUser(
-                payload.userId(), payload.jti(), authContext.roles(), authContext.permissions()));
+                payload.userId(), payload.jti(), authContext.roles(), authContext.permissions(),
+                authContext.departmentId()));
 
         // ⑥ userId 进 MDC，供 TraceIdFilter 的访问日志使用。MDC 生命周期归 TraceIdFilter，这里只 put
         MDC.put(TraceIdFilter.USER_ID, String.valueOf(payload.userId()));

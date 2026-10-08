@@ -51,7 +51,8 @@ class UserContextTest {
         UserContext.set(new UserContext.CurrentUser(
                 7L, "jti-abc",
                 Set.of(Role.AGENT),
-                Set.of("ticket:list", "ticket:process")));
+                Set.of("ticket:list", "ticket:process"),
+                3L));
 
         assertThat(UserContext.isLogin()).isTrue();
         assertThat(UserContext.getUserId()).isEqualTo(7L);
@@ -66,14 +67,14 @@ class UserContextTest {
 
     @Test
     void 管理员判定() {
-        UserContext.set(new UserContext.CurrentUser(1L, "jti", Set.of(Role.ADMIN), Set.of()));
+        UserContext.set(new UserContext.CurrentUser(1L, "jti", Set.of(Role.ADMIN), Set.of(), null));
         assertThat(UserContext.isAdmin()).isTrue();
         assertThat(UserContext.hasRole(Role.ADMIN)).isTrue();
     }
 
     @Test
     void 角色与权限为null时归一成空集合() {
-        UserContext.set(new UserContext.CurrentUser(1L, "jti", null, null));
+        UserContext.set(new UserContext.CurrentUser(1L, "jti", null, null, null));
         assertThat(UserContext.getRoles()).isEmpty();
         assertThat(UserContext.getPermissions()).isEmpty();
         assertThat(UserContext.hasPermission(null)).as("null 权限码不能误判为有权限").isFalse();
@@ -82,7 +83,7 @@ class UserContextTest {
 
     @Test
     void clear后回到未登录() {
-        UserContext.set(new UserContext.CurrentUser(1L, "jti", Set.of(Role.ADMIN), Set.of("x")));
+        UserContext.set(new UserContext.CurrentUser(1L, "jti", Set.of(Role.ADMIN), Set.of("x"), null));
         assertThat(UserContext.isLogin()).isTrue();
 
         UserContext.clear();
@@ -96,7 +97,7 @@ class UserContextTest {
 
     @Test
     void ThreadLocal不跨线程泄漏() throws Exception {
-        UserContext.set(new UserContext.CurrentUser(9L, "jti-main", Set.of(Role.ADMIN), Set.of()));
+        UserContext.set(new UserContext.CurrentUser(9L, "jti-main", Set.of(Role.ADMIN), Set.of(), null));
 
         AtomicReference<Long> otherThreadUserId = new AtomicReference<>(-1L);
         Thread other = new Thread(() -> otherThreadUserId.set(UserContext.getUserId()));

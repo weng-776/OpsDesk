@@ -4,11 +4,13 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.user.entity.Permission;
 import com.opsdesk.user.entity.RolePermission;
+import com.opsdesk.user.entity.User;
 import com.opsdesk.user.entity.UserRole;
 import com.opsdesk.user.service.PermissionService;
 import com.opsdesk.user.service.RolePermissionService;
 import com.opsdesk.user.service.RoleService;
 import com.opsdesk.user.service.UserRoleService;
+import com.opsdesk.user.service.UserService;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -37,15 +39,18 @@ import java.util.stream.Collectors;
 @Component
 public class UserAuthContextLoader {
 
+    private final UserService userService;
     private final UserRoleService userRoleService;
     private final RoleService roleService;
     private final RolePermissionService rolePermissionService;
     private final PermissionService permissionService;
 
-    public UserAuthContextLoader(UserRoleService userRoleService,
+    public UserAuthContextLoader(UserService userService,
+                                 UserRoleService userRoleService,
                                  RoleService roleService,
                                  RolePermissionService rolePermissionService,
                                  PermissionService permissionService) {
+        this.userService = userService;
         this.userRoleService = userRoleService;
         this.roleService = roleService;
         this.rolePermissionService = rolePermissionService;
@@ -53,25 +58,50 @@ public class UserAuthContextLoader {
     }
 
     /**
-     * 加载用户的角色码与权限码。
+     * 加载用户的角色码、权限码与所属部门。
      *
      * <p>无角色 / 无权限时返回空集合（不返回 null，调用方不必判空）。
      * 用户不存在时同样返回空集合 —— 「用户是否存在」不归本类判定，
      * 拦截器只关心「这个 userId 能拿到什么权限」。
+     *
+     * <p><b>共 5 条批量查询</b>：{@code user}（取 department_id）+ 权限链路的 4 条。
+     * 之所以连部门一起查，是因为数据范围 §8.3 的 AGENT 条件 ③ 需要「我的部门」；
+     * 把结果一并放进 {@code auth:perms:{userId}} 的缓存载荷后，
+     * 请求期就<b>不必再单独查一次 user</b> 了（D2-04 优化）。
      */
     public UserAuthContext load(Long userId) {
         if (userId == null) {
             return UserAuthContext.empty();
         }
+        Long departmentId = loadDepartmentId(userId);
+
         List<Long> roleIds = loadRoleIds(userId);
         if (roleIds.isEmpty()) {
-            return UserAuthContext.empty();
+            // 没角色也要把 departmentId 带出去，保持「载荷完整」这一条不变量
+            return new UserAuthContext(Set.of(), Set.of(), departmentId);
         }
         Set<Role> roles = roleService.listByIds(roleIds).stream()
                 .map(com.opsdesk.user.entity.Role::getCode)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        return new UserAuthContext(roles, loadPermissionCodes(roleIds));
+        return new UserAuthContext(roles, loadPermissionCodes(roleIds), departmentId);
+    }
+
+    /**
+     * 取用户所属部门 id（数据范围 §8.3 用）。
+     *
+     * <pre>SELECT department_id FROM user WHERE id = ? AND deleted = 0</pre>
+     * <p>只 select 一列，避免把 BCrypt 密文也捞进内存。
+     * <p>用 {@code getOne(wrapper)}（<b>不带</b> {@code false}）—— 按主键查最多一行，
+     * 真出现多行宁可抛异常，也不要静默取第一行（known-traps #2：{@code getOne(w, false)} 是 fail-open）。
+     *
+     * @return 用户不存在 / 未设部门 → {@code null}
+     */
+    private Long loadDepartmentId(Long userId) {
+        User user = userService.getOne(new LambdaQueryWrapper<User>()
+                .select(User::getDepartmentId)
+                .eq(User::getId, userId));
+        return user == null ? null : user.getDepartmentId();
     }
 
     /**
@@ -127,10 +157,15 @@ public class UserAuthContextLoader {
     /**
      * 一次请求内要落进 {@code UserContext} 的身份要素。
      *
-     * @param roles       角色码集合
-     * @param permissions 权限码集合
+     * <p>名字里只写了 auth，但 {@code departmentId} 也在这里 —— 因为它是数据范围
+     * §8.3 的输入，而数据范围和权限是同一份「每次请求都要拿到」的东西，
+     * 一起查、一起缓存比拆成两次查询/两个 key 划算。
+     *
+     * @param roles        角色码集合
+     * @param permissions  权限码集合
+     * @param departmentId 所属部门 id，可为 {@code null}（未设部门）
      */
-    public record UserAuthContext(Set<Role> roles, Set<String> permissions) {
+    public record UserAuthContext(Set<Role> roles, Set<String> permissions, Long departmentId) {
 
         public UserAuthContext {
             roles = roles == null ? Set.of() : Set.copyOf(roles);
@@ -138,7 +173,7 @@ public class UserAuthContextLoader {
         }
 
         public static UserAuthContext empty() {
-            return new UserAuthContext(Set.of(), Set.of());
+            return new UserAuthContext(Set.of(), Set.of(), null);
         }
     }
 }
