@@ -1,6 +1,8 @@
 package com.opsdesk.organization.controller;
 
+import com.opsdesk.auth.annotation.RequirePermission;
 import com.opsdesk.common.Result;
+import com.opsdesk.common.constant.PermissionCodes;
 import com.opsdesk.organization.dto.DepartmentCreateDTO;
 import com.opsdesk.organization.dto.DepartmentUpdateDTO;
 import com.opsdesk.organization.service.DepartmentManageService;
@@ -23,10 +25,11 @@ import java.util.List;
  *
  * <p>鉴权：所有接口需要登录 —— {@code AuthInterceptor}（D1-02）已覆盖 {@code /api/**}。
  *
- * <p>⚠️ <b>权限码校验本工单先不做</b>（按工单 §3 的依赖说明）：
- * 按 API 文档 §6 的抬头，这一组接口应当限 {@code ADMIN}，
- * 但 {@code @RequirePermission} 注解与权限拦截器是 <b>D2-02</b> 的交付物，
- * D2-02 完成后回来补。在那之前任何已登录用户都能调用本组接口 —— 已知的临时状态。
+ * <p><b>权限码校验（D2-02 已补全）</b>：按 API 文档 §6 的抬头，这一组接口限 {@code ADMIN}，
+ * 已给 4 个方法逐个加上 {@code @RequirePermission}（权限码见 §3.6，用
+ * {@code PermissionCodes} 常量）。已登录但缺码 → 40300；未登录 → 40100。
+ *
+ * <p>⚠️ 本组只做<b>权限码</b>校验，不做<b>数据范围</b>校验（§8 / 40301，归 D2-04）。
  *
  * <p>Controller 保持「薄」：只做参数绑定与结果包装，业务与异常都在 Service 层。
  */
@@ -45,18 +48,21 @@ public class DepartmentController {
      *
      * <p>注意 {@code path} <b>不在</b>出参里：它是子树前缀匹配的实现细节，不进对外契约。
      */
+    @RequirePermission(PermissionCodes.DEPARTMENT_LIST)
     @GetMapping("/tree")
     public Result<List<DepartmentNodeVO>> tree() {
         return Result.ok(departmentManageService.tree());
     }
 
     /** 创建部门（§6.2）—— 返回 {@code {"id": 新部门ID}}；父部门不存在返回 40001 */
+    @RequirePermission(PermissionCodes.DEPARTMENT_CREATE)
     @PostMapping
     public Result<DepartmentCreatedVO> create(@Valid @RequestBody DepartmentCreateDTO dto) {
         return Result.ok(new DepartmentCreatedVO(departmentManageService.create(dto)));
     }
 
     /** 修改部门（§6.3）—— 变更父部门会级联重算整棵子树的 path；成环返回 40900 */
+    @RequirePermission(PermissionCodes.DEPARTMENT_UPDATE)
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody DepartmentUpdateDTO dto) {
         departmentManageService.update(id, dto);
@@ -64,6 +70,7 @@ public class DepartmentController {
     }
 
     /** 删除部门（§6.4，逻辑删除）—— 存在子部门或部门下有用户返回 40900 */
+    @RequirePermission(PermissionCodes.DEPARTMENT_DELETE)
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
         departmentManageService.delete(id);
