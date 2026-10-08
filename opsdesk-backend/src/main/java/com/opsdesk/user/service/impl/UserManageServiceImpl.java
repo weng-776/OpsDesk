@@ -1,6 +1,7 @@
 package com.opsdesk.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.auth.service.PermissionLoader;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
@@ -26,7 +27,6 @@ import com.opsdesk.user.vo.RoleVO;
 import com.opsdesk.user.vo.UserVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -84,9 +84,6 @@ public class UserManageServiceImpl implements UserManageService {
     /** {@code user.status} 启用值（DDL 注释：1 启用 0 禁用） */
     private static final int USER_STATUS_ENABLED = 1;
 
-    /** 权限缓存 key 前缀（规格基线 §23.4：{@code auth:perms:{userId}}） */
-    private static final String PERMS_CACHE_PREFIX = "auth:perms:";
-
     /** 用户名冲突的统一文案（§5.3 / §5.4 均映射 40900） */
     private static final String MSG_USERNAME_EXISTS = "用户名已存在";
 
@@ -107,7 +104,15 @@ public class UserManageServiceImpl implements UserManageService {
     private final RoleService roleService;
     private final DepartmentService departmentService;
     private final TicketService ticketService;
-    private final StringRedisTemplate redisTemplate;
+
+    /**
+     * 权限缓存失效（D2-01 起统一走 {@link PermissionLoader}）。
+     *
+     * <p>D1-03 时这里是自己拼 {@code "auth:perms:" + userId} 直接删 —— 当时
+     * {@code PermissionLoader} 还没落地。D2-01 之后收敛到本类，理由：
+     * <b>key 只允许有一处定义</b>，两个模块各写一份字面量，哪天改 key 一定会漏改一处。
+     */
+    private final PermissionLoader permissionLoader;
 
     /**
      * 密码编码器。这里第三次 {@code new} 同一个东西（D1-01 的 {@code AuthServiceImpl}
@@ -122,13 +127,13 @@ public class UserManageServiceImpl implements UserManageService {
                                  RoleService roleService,
                                  DepartmentService departmentService,
                                  TicketService ticketService,
-                                 StringRedisTemplate redisTemplate) {
+                                 PermissionLoader permissionLoader) {
         this.userService = userService;
         this.userRoleService = userRoleService;
         this.roleService = roleService;
         this.departmentService = departmentService;
         this.ticketService = ticketService;
-        this.redisTemplate = redisTemplate;
+        this.permissionLoader = permissionLoader;
     }
 
     // ==================== §5.1 列表 ====================
@@ -390,14 +395,15 @@ public class UserManageServiceImpl implements UserManageService {
     }
 
     /**
-     * 清除用户的权限缓存（§23.2 / §23.4）。
+     * 清除用户的权限缓存（§23.2 / §23.4）—— 角色 / 状态 / 部门变更后调用，
+     * 使变更<b>无需重新登录立即生效</b>。
      *
-     * <p>⚠️ {@code PermissionLoader} 是 D2-01 的交付物，本工单还没有缓存写入方，
-     * 所以这里删的是一个目前不存在的 key（Redis 删不存在的 key 是 no-op）。
-     * 属「提前把 key 契约写对」；D2-01 落地后本方法立即生效。
+     * <p>D1-03 时这里直接删 {@code auth:perms:{userId}}（当时 {@code PermissionLoader}
+     * 还没落地）；D2-01 起统一改调 {@link PermissionLoader#evict}，
+     * 让缓存 key 的唯一定义处收敛在 {@code PermissionLoader} 里。
      */
     private void evictPermissionCache(Long userId) {
-        redisTemplate.delete(PERMS_CACHE_PREFIX + userId);
+        permissionLoader.evict(userId);
     }
 
     /**
