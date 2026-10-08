@@ -1,6 +1,8 @@
 package com.opsdesk.common.datascope;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.common.BizException;
+import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.TicketStatus;
@@ -43,10 +45,17 @@ import java.util.Set;
  * {@code department_id IN (…)}」：语义与 §8.3 <b>等价</b>（{@code department_id} 就是创建人部门快照）、
  * 命中 {@code idx_ticket_dept(department_id, created_at)}、且零手写 SQL。已与用户确认。
  *
- * <h2>本类不做的事</h2>
- * <b>不抛 40301</b>。本类只回答「可见 / 不可见」，把「不可见 → 40301」留给调用方
- * （D3-02 列表接口直接用 {@link #applyScope} 过滤；D3-03 详情接口用
- * {@link #isVisible} 判 false 后抛 40301）。这样 Helper 保持无异常、好测。
+ * <h2>两个出口：纯判定 + 抛异常</h2>
+ * <ul>
+ *   <li>{@link #isVisible} —— <b>纯判定</b>，不抛异常，好测（测试里可以直接断言真假）</li>
+ *   <li>{@link #assertVisible} —— 不可见时抛 {@code 40301}，给详情 / 操作类接口用。
+ *       把「用哪个错误码、文案怎么写」收口在这里，免得每个接口各写一遍、写歪了也没人发现</li>
+ * </ul>
+ * 列表类接口用 {@link #applyScope}（只过滤、不拒绝）；单条接口用 {@link #assertVisible}。
+ *
+ * <p>⚠️ 用 {@code assertVisible} 的调用方要注意 §2.7：越权返回 {@code 40301} 而<b>不是</b>
+ * {@code 40400}，但实现上要保证<b>不泄露资源是否存在</b> —— 正确顺序是
+ * 「先按 id 查，查不到抛 40400；查到了再 assertVisible」，不要用 40301 去盖住「不存在」。
  */
 @Slf4j
 @Component
@@ -80,7 +89,7 @@ public class TicketDataScopeHelper {
                 // 用「恒假」而不是「不加条件」—— 后者会把全部数据放出去（fail-open）
                 wrapper.isNull(Ticket::getId);
             }
-            case SELF -> wrapper.eq(Ticket::getCreatorId, scope.userId());
+            case SELF -> applySelfScope(wrapper, scope.userId());
             case AGENT -> applyAgentScope(wrapper, scope);
         }
     }
@@ -107,6 +116,25 @@ public class TicketDataScopeHelper {
         });
     }
 
+    /**
+     * 强制按 SELF 追加条件：{@code creator_id = userId}（§8.2 的 EMPLOYEE 范围）。
+     *
+     * <p>给「我的工单」{@code GET /api/tickets/mine} 用 —— §8.2 抬头明确写「数据范围：SELF」，
+     * 也就是说它<b>不按角色叠加</b>：ADMIN 调 {@code /mine} 也只能看到自己创建的。
+     * 如果 {@code /mine} 也走 {@link #applyScope}，ADMIN 会拿到全部工单，与「我的工单」语义矛盾。
+     *
+     * <p>与 {@link #applyScope} 的 SELF 分支共用同一行逻辑 —— SELF 的定义只此一处。
+     */
+    public void applySelfScope(LambdaQueryWrapper<Ticket> wrapper, Long userId) {
+        Objects.requireNonNull(wrapper, "wrapper 不能为空");
+        if (userId == null) {
+            // 未登录：恒假条件，什么都看不到（fail-closed）
+            wrapper.isNull(Ticket::getId);
+            return;
+        }
+        wrapper.eq(Ticket::getCreatorId, userId);
+    }
+
     // ==================== 对外：单条可见性 ====================
 
     /**
@@ -128,6 +156,23 @@ public class TicketDataScopeHelper {
             case SELF -> Objects.equals(ticket.getCreatorId(), scope.userId());
             case AGENT -> isVisibleToAgent(ticket, scope);
         };
+    }
+
+    /**
+     * 单条工单不可见时抛 {@code 40301}（API 文档 §8.4 / 规格基线 §25.3 用例 #2、#5）。
+     *
+     * <p>与 {@link #isVisible} 共用同一个 {@link Scope} 解析，只是把「不可见」翻译成异常。
+     * 详情、以及所有「按 id 操作单条工单」的接口都应该用它，而不是各自写一遍判断。
+     *
+     * @throws BizException {@code 40301}（{@code DATA_SCOPE_DENIED}）
+     */
+    public void assertVisible(Ticket ticket, UserContext.CurrentUser user) {
+        if (isVisible(ticket, user)) {
+            return;
+        }
+        log.warn("[数据范围] 越权访问被拒：userId={} ticketId={}",
+                user == null ? null : user.userId(), ticket == null ? null : ticket.getId());
+        throw new BizException(ErrorCode.DATA_SCOPE_DENIED);
     }
 
     private boolean isVisibleToAgent(Ticket ticket, Scope scope) {

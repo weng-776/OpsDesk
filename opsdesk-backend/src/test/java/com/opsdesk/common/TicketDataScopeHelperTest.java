@@ -1,6 +1,8 @@
 package com.opsdesk.common;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.common.BizException;
+import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.datascope.DepartmentScopeHelper;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
 import com.opsdesk.common.enums.Role;
@@ -24,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * 工单数据范围 Helper 验收测试（工单 D2-04，SOP §5 红区）
@@ -230,6 +233,39 @@ class TicketDataScopeHelperTest {
         }
     }
 
+    // ==================== 40301 出口 + 强制 SELF（D3-02 衔接） ====================
+
+    @Test
+    @DisplayName("assertVisible：可见不抛；不可见抛 40301（§25.3 #2 / #5 的出口）")
+    void assertVisible出口() {
+        // 工单 1 是 emp_wang(4) 创建的
+        Ticket own = ticketService.getById(1L);
+        assertThatCode(() -> dataScopeHelper.assertVisible(own, userOf(EMP_WANG, Role.EMPLOYEE)))
+                .as("自己的工单：可见 → 不抛").doesNotThrowAnyException();
+        assertThat(catchBiz(() -> dataScopeHelper.assertVisible(own, userOf(EMP_ZHAO, Role.EMPLOYEE))))
+                .as("§25.3 #2：EMPLOYEE 查他人工单 → 40301（不是 40400）")
+                .isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+
+        // 工单 3：assignee=agent_li(3)、WAITING_CONFIRM、财务部(5)
+        Ticket others = ticketService.getById(3L);
+        assertThat(catchBiz(() -> dataScopeHelper.assertVisible(others, userOf(AGENT_ZHANG, Role.AGENT))))
+                .as("§25.3 #5：AGENT 查「非本人/非公共池/非本部门」→ 40301")
+                .isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+        assertThatCode(() -> dataScopeHelper.assertVisible(others, userOf(AGENT_LI, Role.AGENT)))
+                .as("受理人本人可见 → 不抛").doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("applySelfScope：强制只看自己创建的 —— /mine 用它（§8.2「数据范围：SELF」）")
+    void applySelfScope强制只看自己() {
+        // 注意方法签名只收 userId、**不收 roles** —— 所以「按角色放宽」在结构上就不可能发生，
+        // 这正是 /mine 需要它的原因（ADMIN 调 /mine 也只能看到自己创建的）
+        assertThat(idsWithSelfScope(ADMIN_ID)).as("admin 在种子里没创建过工单").isEmpty();
+        assertThat(idsWithSelfScope(AGENT_ZHANG)).as("agent_zhang 也没创建过").isEmpty();
+        assertThat(idsWithSelfScope(EMP_WANG)).as("emp_wang 创建了 1/3/5").containsExactly(1L, 3L, 5L);
+        assertThat(idsWithSelfScope(EMP_ZHAO)).as("emp_zhao 创建了 2/4").containsExactly(2L, 4L);
+    }
+
     // ==================== §25.3 越权用例 ====================
 
     @Test
@@ -267,6 +303,24 @@ class TicketDataScopeHelperTest {
      * <p>注意：这**只发生在测试的装配阶段**。生产链路上 {@code TicketDataScopeHelper}
      * 已经不再注入 {@code UserService}（D2-04 优化），结构上就不可能查 user 表。
      */
+    /** 用 applySelfScope 真查一次库 */
+    private List<Long> idsWithSelfScope(Long userId) {
+        LambdaQueryWrapper<Ticket> wrapper = new LambdaQueryWrapper<>();
+        wrapper.select(Ticket::getId);
+        dataScopeHelper.applySelfScope(wrapper, userId);
+        return ticketService.list(wrapper).stream().map(Ticket::getId).sorted().toList();
+    }
+
+    private static ErrorCode catchBiz(Runnable action) {
+        try {
+            action.run();
+        }
+        catch (BizException ex) {
+            return ex.getErrorCode();
+        }
+        throw new AssertionError("预期抛出 BizException，但调用正常返回了");
+    }
+
     private UserContext.CurrentUser userOf(Long userId, Role... roles) {
         return new UserContext.CurrentUser(userId, "test-jti-" + userId, Set.of(roles), Set.of(),
                 departmentIdOf(userId));
