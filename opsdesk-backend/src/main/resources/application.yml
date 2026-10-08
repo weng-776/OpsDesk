@@ -1,0 +1,171 @@
+# ============================================================
+#  OpsDesk 后端配置（V1）
+#  权威规格：OpsDesk_项目规格基线_V1_PRD-业务边界-流程-ER-模块-API.md
+#  约定（开发 SOP §7）：密钥 / 密码一律走环境变量，本文件只写 ${} 占位符
+# ============================================================
+
+server:
+  port: 8080                       # §2.1 本地 http://localhost:8080，接口统一前缀 /api
+
+# ---------- JWT ----------
+jwt:
+  token:
+    tokenExpiration: 480           # 单位：分钟。§23.1「JWT exp = 8 小时」→ 480（注意：CodeMind 里是 120）
+    tokenSignKey: ${JWT_SECRET}    # HS256 密钥，至少 32 字节，否则 jjwt 启动即报错
+
+spring:
+  application:
+    name: opsdesk-backend
+
+  # ================= AI 模块 =================
+  ai:
+    # ---- 向量库：Milvus Standalone（etcd + minio + milvus 三件套）----
+    vectorstore:
+      milvus:
+        client:
+          host: ${MILVUS_HOST}
+          port: 19530
+          username: ${MILVUS_NAME}
+          password: ${MILVUS_PASSWORD}
+        database-name: "default"
+        collection-name: "opsdesk_vector_store"
+        embedding-dimension: 1024
+        index-type: ivf_flat
+        metric-type: cosine
+        initialize-schema: true                   # 首次启动自动建 collection
+
+    # ---- 向量模型：通义（走 DashScope 的 OpenAI 兼容端点）----
+    openai:
+      embedding:
+        base-url: https://dashscope.aliyuncs.com/compatible-mode
+        api-key: ${ALI_API_KEY}
+        options:
+          model: qwen3.7-text-embedding-flash
+          dimensions: 1024
+      api-key: not-used              # 占位：OpenAI 自动配置要求该值非空；本项目只用上面的 embedding 配置
+
+    # ---- 对话模型：DeepSeek ----
+    deepseek:
+      chat:
+        api-key: ${DS_API_KEY}
+        base-url: https://api.deepseek.com
+        options:
+          model: deepseek-v4-flash
+          temperature: 0.8
+
+    # ---- AI 会话记忆落 MySQL（自动建表 SPRING_AI_CHAT_MEMORY）----
+    chat:
+      memory:
+        repository:
+          jdbc:
+            initialize-schema: always
+            schema: classpath:sql/schema-mysql.sql
+
+    # ---- AI 调用（chat / embedding）重试策略 ----
+    retry:
+      max-attempts: 3                # 默认 10
+      on-client-errors: false        # 4xx（参数错 / 鉴权错）重试无意义
+      backoff:
+        initial-interval: 1s         # 默认 2s
+        multiplier: 2                # 默认 5，涨得太陡
+        max-interval: 5s             # 默认 180s（3 分钟）
+
+  # ================= RabbitMQ =================
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: 5672
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: /
+    # 生产者不丢：§13.4 Publisher Confirm + Return 回调
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: auto
+        prefetch: 1
+        default-requeue-rejected: false   # 未进入重试链的异常 → nack 不重回队列 → 走队列的原生死信参数
+
+
+  # ================= 上传限制 =================
+  servlet:
+    multipart:
+      max-file-size: 10MB            # §23.1 附件上限 10MB
+      max-request-size: 12MB
+
+  # ================= Redis =================
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: 6379
+      password: ${REDIS_PASSWORD}
+
+  # ================= Jackson =================
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+  # ================= 数据源 =================
+  datasource:
+    type: com.zaxxer.hikari.HikariDataSource
+    url: jdbc:mysql://localhost:3306/opsdesk?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2b8
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-test-query: SELECT 1     # 自动检测连接
+      connection-timeout: 60000           # 连接超时，默认 30s
+      idle-timeout: 500000                # 空闲连接存活时间
+      max-lifetime: 540000                # 连接最长生命周期
+      maximum-pool-size: 12               # 最大连接数，默认 10
+      minimum-idle: 10                    # 最小空闲连接
+      pool-name: OpsDeskHikariPool
+
+# ================= MyBatis-Plus =================
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.opsdesk.*.entity
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl   # 打印 SQL，便于调试
+    auto-mapping-behavior: full
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted       # §8 逻辑删除：查询自动追加 deleted = 0
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ================= MinIO（附件存储）=================
+minio:
+  endpoint: ${MINIO_ENDPOINT}
+  access-key: ${MINIO_ACCESS_KEY}
+  secret-key: ${MINIO_SECRET_KEY}
+  bucket-name: opsdesk
+
+# ================= 健康检查（§23.6）=================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+# ================= 日志 =================
+logging:
+  file:
+    name: logs/opsdesk.log
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 7
+      total-size-cap: 500MB
+  # §23.6：traceId / userId 随日志输出（由 TraceIdFilter 写入 MDC）
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{traceId:-}] [%X{userId:-}] %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] [%X{userId:-}] %logger{36} - %msg%n"
+  level:
+    org.springframework.ai: debug       # AI 调用日志
+    com.opsdesk: debug                  # 本项目日志

@@ -1,0 +1,62 @@
+# ============================================================
+# 设计文档：不进仓库（远程仓库只保留代码，保持干净）
+# 文档的唯一副本在仓库外的 E:\code\OpsDesk\ 根目录，不要在这里改文档
+# ============================================================
+OpsDesk_*.md
+
+# ============================================================
+# 运行期产物（2026-10-08 补 —— Initializr 默认规则没覆盖这些）
+# ⚠️ .gitignore 不支持行尾注释，# 必须在行首
+# ============================================================
+
+# 应用日志：logs/opsdesk.log（GBK 编码，每跑一次测试就变，绝不能进库）
+logs/
+*.log
+*.log.*
+
+# 本机覆盖配置 / 密钥（JWT_SECRET、数据库密码等一律走环境变量，不落文件）
+application-local.yml
+application-local.yaml
+*.local.yml
+.env
+
+# Maven 中间产物
+.flattened-pom.xml
+dependency-reduced-pom.xml
+
+# ============================================================
+# 以下为 Spring Initializr 默认规则，保留
+# ============================================================
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
