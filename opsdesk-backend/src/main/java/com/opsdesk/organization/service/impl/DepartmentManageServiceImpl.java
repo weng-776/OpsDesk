@@ -3,6 +3,7 @@ package com.opsdesk.organization.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
+import com.opsdesk.common.datascope.DepartmentScopeHelper;
 import com.opsdesk.organization.dto.DepartmentCreateDTO;
 import com.opsdesk.organization.dto.DepartmentUpdateDTO;
 import com.opsdesk.organization.entity.Department;
@@ -71,9 +72,15 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
     private final DepartmentService departmentService;
     private final UserService userService;
 
-    public DepartmentManageServiceImpl(DepartmentService departmentService, UserService userService) {
+    /** 部门子树解析（D2-04 抽取的公共实现，本类不再自己拼 path 前缀 LIKE） */
+    private final DepartmentScopeHelper departmentScopeHelper;
+
+    public DepartmentManageServiceImpl(DepartmentService departmentService,
+                                       UserService userService,
+                                       DepartmentScopeHelper departmentScopeHelper) {
         this.departmentService = departmentService;
         this.userService = userService;
+        this.departmentScopeHelper = departmentScopeHelper;
     }
 
     // ==================== §6.1 部门树 ====================
@@ -207,11 +214,13 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
      * @return 被改写的子孙数量
      */
     private int rewriteSubtreePaths(Long selfId, String oldPrefix, String newPrefix) {
-        // 常量前缀 LIKE，命中 idx_dept_path。
-        // oldPrefix 一定以 "/" 结尾（path 规则保证），所以 /1/2/ 不会误伤 /1/20/
-        List<Department> descendants = departmentService.list(new LambdaQueryWrapper<Department>()
-                .likeRight(Department::getPath, oldPrefix)
-                .ne(Department::getId, selfId));
+        // 常量前缀 LIKE（命中 idx_dept_path）收敛到 DepartmentScopeHelper，
+        // 与 D1-03 的「含子部门」筛选、D2-04 的工单数据范围共用同一份实现。
+        // 因为 path 含自身，取出来的结果**包含自己** —— 这里显式排掉，
+        // 保持「只重写子孙」的语义（自己的 path 已在上面 updateById 里改过了）
+        List<Department> descendants = departmentScopeHelper.subtreeByPath(oldPrefix).stream()
+                .filter(descendant -> !descendant.getId().equals(selfId))
+                .toList();
 
         if (descendants.isEmpty()) {
             return 0;

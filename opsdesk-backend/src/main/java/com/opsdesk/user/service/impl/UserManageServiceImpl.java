@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.opsdesk.auth.service.PermissionLoader;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.opsdesk.common.BizException;
+import com.opsdesk.common.datascope.DepartmentScopeHelper;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.PageResult;
 import com.opsdesk.common.enums.TicketStatus;
@@ -105,6 +106,9 @@ public class UserManageServiceImpl implements UserManageService {
     private final DepartmentService departmentService;
     private final TicketService ticketService;
 
+    /** 部门子树解析（D2-04 抽取的公共实现，本类不再自己拼 path 前缀 LIKE） */
+    private final DepartmentScopeHelper departmentScopeHelper;
+
     /**
      * 权限缓存失效（D2-01 起统一走 {@link PermissionLoader}）。
      *
@@ -127,13 +131,15 @@ public class UserManageServiceImpl implements UserManageService {
                                  RoleService roleService,
                                  DepartmentService departmentService,
                                  TicketService ticketService,
-                                 PermissionLoader permissionLoader) {
+                                 PermissionLoader permissionLoader,
+                                 DepartmentScopeHelper departmentScopeHelper) {
         this.userService = userService;
         this.userRoleService = userRoleService;
         this.roleService = roleService;
         this.departmentService = departmentService;
         this.ticketService = ticketService;
         this.permissionLoader = permissionLoader;
+        this.departmentScopeHelper = departmentScopeHelper;
     }
 
     // ==================== §5.1 列表 ====================
@@ -155,7 +161,7 @@ public class UserManageServiceImpl implements UserManageService {
         }
 
         if (query.getDepartmentId() != null) {
-            List<Long> departmentIds = resolveDepartmentSubtreeIds(query.getDepartmentId());
+            List<Long> departmentIds = departmentScopeHelper.subtreeIds(query.getDepartmentId());
             if (departmentIds.isEmpty()) {
                 // 部门不存在 → 空结果（筛选条件命中不了任何用户，不是参数错误）
                 return PageResult.empty(pageNo, size);
@@ -404,33 +410,6 @@ public class UserManageServiceImpl implements UserManageService {
      */
     private void evictPermissionCache(Long userId) {
         permissionLoader.evict(userId);
-    }
-
-    /**
-     * 把部门筛选条件展开成「该部门 + 其所有子孙部门」的 ID 列表（§5.1 的「含子部门」）。
-     *
-     * <pre>SELECT id FROM department WHERE deleted = 0 AND path LIKE '/1/2/%'</pre>
-     * <p>{@code department.path} 是「含自身」的祖先路径（如 {@code /1/2/3/}），
-     * 所以对目标部门的 path 做<b>常量前缀 LIKE</b> 就正好覆盖自己 + 整棵子树，
-     * 且命中索引 {@code idx_dept_path}。
-     * <p>前缀匹配天然不会误伤兄弟节点：{@code /1/3/%} 匹配不到 {@code /1/30/}。
-     */
-    private List<Long> resolveDepartmentSubtreeIds(Long departmentId) {
-        Department department = departmentService.getById(departmentId);
-        if (department == null) {
-            return List.of();
-        }
-        String path = department.getPath();
-        if (!StringUtils.hasText(path)) {
-            // path 异常时退化成「只筛本部门」，而不是把整表放出去
-            return List.of(department.getId());
-        }
-        return departmentService.list(new LambdaQueryWrapper<Department>()
-                        .select(Department::getId)
-                        .likeRight(Department::getPath, path))
-                .stream()
-                .map(Department::getId)
-                .toList();
     }
 
     /**
