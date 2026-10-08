@@ -1,5 +1,6 @@
 package com.opsdesk.auth.interceptor;
 
+import com.opsdesk.auth.service.PermissionLoader;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.JwtHelper;
@@ -83,16 +84,16 @@ public class AuthInterceptor implements HandlerInterceptor {
     private final BearerTokenResolver tokenResolver;
     private final JwtHelper jwtHelper;
     private final StringRedisTemplate redisTemplate;
-    private final UserAuthContextLoader authContextLoader;
+    private final PermissionLoader permissionLoader;
 
     public AuthInterceptor(BearerTokenResolver tokenResolver,
                            JwtHelper jwtHelper,
                            StringRedisTemplate redisTemplate,
-                           UserAuthContextLoader authContextLoader) {
+                           PermissionLoader permissionLoader) {
         this.tokenResolver = tokenResolver;
         this.jwtHelper = jwtHelper;
         this.redisTemplate = redisTemplate;
-        this.authContextLoader = authContextLoader;
+        this.permissionLoader = permissionLoader;
     }
 
     @Override
@@ -123,8 +124,9 @@ public class AuthInterceptor implements HandlerInterceptor {
             throw new BizException(ErrorCode.UNAUTHORIZED, "登录状态已失效，请重新登录");
         }
 
-        // ④ 加载角色与权限（D2-01 会换成带 Redis 缓存的 PermissionLoader）
-        UserAuthContextLoader.UserAuthContext authContext = authContextLoader.load(payload.userId());
+        // ④ 加载角色与权限 —— D2-01 起走 Redis 缓存 auth:perms:{userId}（TTL 10 分钟），
+        //    未命中才回源查库。命中时这里 0 条 SQL
+        UserAuthContextLoader.UserAuthContext authContext = permissionLoader.load(payload.userId());
 
         // ==================== 危险分界线：以下两句不得失败，之后不得再插任何语句 ====================
         // ⑤ 落身份（必须是本方法最后一件「有语义」的事，理由见类注释）

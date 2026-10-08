@@ -2,23 +2,18 @@ package com.opsdesk.auth.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.opsdesk.auth.dto.LoginRequest;
+import com.opsdesk.auth.interceptor.UserAuthContextLoader;
 import com.opsdesk.auth.service.AuthService;
+import com.opsdesk.auth.service.PermissionLoader;
 import com.opsdesk.auth.vo.LoginUserVO;
 import com.opsdesk.auth.vo.LoginVO;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.JwtHelper;
+import com.opsdesk.common.enums.Role;
 import com.opsdesk.organization.entity.Department;
 import com.opsdesk.organization.service.DepartmentService;
-import com.opsdesk.user.entity.Permission;
-import com.opsdesk.user.entity.Role;
-import com.opsdesk.user.entity.RolePermission;
 import com.opsdesk.user.entity.User;
-import com.opsdesk.user.entity.UserRole;
-import com.opsdesk.user.service.PermissionService;
-import com.opsdesk.user.service.RolePermissionService;
-import com.opsdesk.user.service.RoleService;
-import com.opsdesk.user.service.UserRoleService;
 import com.opsdesk.user.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -27,9 +22,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -40,8 +32,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p><b>本工单的两条硬约束</b>：
  * <ol>
- *   <li><b>权限不进 JWT</b>（§23.2）—— {@code JwtHelper#createToken} 只放 sub / jti / iat / exp，
- *       权限由本方法查库返回给前端；请求期的权限校验走 Redis {@code auth:perms:{userId}}（D2-01）</li>
+ *   <li><b>权限不进 JWT</b>（§23.2）—— {@code JwtHelper#createToken} 只放 sub / jti / iat / exp；
+ *       角色与权限由 {@link PermissionLoader} 提供（D2-01 起走 Redis 缓存 {@code auth:perms:{userId}}），
+ *       请求期的权限校验同样读这份缓存</li>
  *   <li><b>不跳过失败锁定</b>—— 锁定校验放在验密<b>之前</b>，
  *       所以第 6 次即使密码正确也会被拒（工单验收 2）</li>
  * </ol>
@@ -76,13 +69,20 @@ public class AuthServiceImpl implements AuthService {
     // ==================== 依赖 ====================
 
     private final UserService userService;
-    private final UserRoleService userRoleService;
-    private final RoleService roleService;
-    private final RolePermissionService rolePermissionService;
-    private final PermissionService permissionService;
     private final DepartmentService departmentService;
     private final StringRedisTemplate redisTemplate;
     private final JwtHelper jwtHelper;
+
+    /**
+     * 权限加载器（D2-01 落地）。
+     *
+     * <p>D1-01 时这里自己查库（4 条批量查询），D2-01 起改为统一走
+     * {@link PermissionLoader}：读 Redis {@code auth:perms:{userId}}，未命中才回源查库。
+     * 所以登录顺带把该用户的权限缓存 warm 起来 —— 登录后的第一个请求不必再查库。
+     * 原先注入的 {@code UserRoleService / RoleService / RolePermissionService / PermissionService}
+     * 随之移除（已无使用点）。
+     */
+    private final PermissionLoader permissionLoader;
 
     /**
      * 密码编码器。这里直接 {@code new} 而不是做成 {@code @Bean}：
@@ -92,21 +92,15 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder(BCRYPT_STRENGTH);
 
     public AuthServiceImpl(UserService userService,
-                           UserRoleService userRoleService,
-                           RoleService roleService,
-                           RolePermissionService rolePermissionService,
-                           PermissionService permissionService,
                            DepartmentService departmentService,
                            StringRedisTemplate redisTemplate,
-                           JwtHelper jwtHelper) {
+                           JwtHelper jwtHelper,
+                           PermissionLoader permissionLoader) {
         this.userService = userService;
-        this.userRoleService = userRoleService;
-        this.roleService = roleService;
-        this.rolePermissionService = rolePermissionService;
-        this.permissionService = permissionService;
         this.departmentService = departmentService;
         this.redisTemplate = redisTemplate;
         this.jwtHelper = jwtHelper;
+        this.permissionLoader = permissionLoader;
     }
 
     // ==================== 主流程 ====================
@@ -119,7 +113,7 @@ public class AuthServiceImpl implements AuthService {
         // 1) 锁定校验 —— 必须在验密之前，否则「第 6 次用正确密码」会被放过
         assertNotLocked(username);
 
-        // 2) 查用户。@TableLogic 自动追加 deleted = 0，已删除账号查不到
+        // 2) 查用户
         //
         // 只按 username 查，**绝不能把密码放进 WHERE**：
         //    BCrypt 是「加盐 + 每次结果都不同」
@@ -216,13 +210,17 @@ public class AuthServiceImpl implements AuthService {
     /**
      * 组装 {@link LoginUserVO}：用户基本信息 + 部门名 + 角色码 + 权限码。
      *
-     * <p>本工单直接查库（4 次批量查询，无循环内查库）：
-     * {@code user_role} → {@code role} → {@code role_permission} → {@code permission}。
-     * Redis 缓存 {@code auth:perms:{userId}} 放 D2-01。
+     * <p>角色与权限统一由 {@link PermissionLoader} 提供（D2-01）——
+     * 读 Redis {@code auth:perms:{userId}}（TTL 10 分钟），未命中才回源查库并回填。
+     * D1-01 时这里自己查库的那 4 条查询已挪进 {@code UserAuthContextLoader}（回源实现）。
+     *
+     * <p>⚠️ <b>顺序变化</b>：权限码现在是<b>字典序</b>，不再是 D1-01 的 {@code (sort, id)} 序
+     * —— 缓存载荷与 {@code UserContext} 内部都是 {@code Set}，不保序。
+     * 这与 {@code GET /api/auth/me} 的口径一致（它也是字典序），属于「两个接口终于对齐」。
+     * 权限码列表是集合语义，前端只做成员判断，顺序不影响功能。
      */
     private LoginUserVO buildLoginUserVO(User user) {
-        List<Long> roleIds = loadRoleIds(user.getId());
-        List<Role> roles = roleIds.isEmpty() ? List.of() : roleService.listByIds(roleIds);
+        UserAuthContextLoader.UserAuthContext authContext = permissionLoader.load(user.getId());
 
         LoginUserVO vo = new LoginUserVO();
         vo.setId(user.getId());
@@ -232,57 +230,9 @@ public class AuthServiceImpl implements AuthService {
         vo.setDepartmentId(user.getDepartmentId());
         vo.setDepartmentName(loadDepartmentName(user.getDepartmentId()));
         vo.setStatus(user.getStatus());
-        vo.setRoles(roles.stream()
-                .filter(r -> r.getCode() != null)
-                .sorted(Comparator.comparing(Role::getId))
-                .map(r -> r.getCode().name())
-                .distinct()
-                .toList());
-        vo.setPermissions(loadPermissionCodes(roleIds));
+        vo.setRoles(authContext.roles().stream().sorted().map(Role::name).toList());
+        vo.setPermissions(authContext.permissions().stream().sorted().toList());
         return vo;
-    }
-
-    /** 用户 → 角色 ID 列表 */
-    private List<Long> loadRoleIds(Long userId) {
-        return userRoleService.list(new LambdaQueryWrapper<UserRole>()
-                        .select(UserRole::getRoleId)
-                        .eq(UserRole::getUserId, userId))
-                .stream()
-                .map(UserRole::getRoleId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .toList();
-    }
-
-    /**
-     * 角色 ID 列表 → 权限码列表（UserRole → Role → RolePermission → Permission 的后两跳）。
-     *
-     * <p>按 {@code permission.sort} 再按 id 排序：seed 里 MENU 在前、API 在后，
-     * 前端拿到的顺序与权限树一致，且结果稳定可断言。
-     */
-    private List<String> loadPermissionCodes(List<Long> roleIds) {
-        if (roleIds.isEmpty()) {
-            return List.of();
-        }
-        List<Long> permissionIds = rolePermissionService.list(new LambdaQueryWrapper<RolePermission>()
-                        .select(RolePermission::getPermissionId)
-                        .in(RolePermission::getRoleId, roleIds))
-                .stream()
-                .map(RolePermission::getPermissionId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .toList();
-        if (permissionIds.isEmpty()) {
-            return List.of();
-        }
-        return permissionService.listByIds(permissionIds).stream()
-                .filter(p -> StringUtils.hasText(p.getCode()))
-                .sorted(Comparator
-                        .comparing((Permission p) -> p.getSort() == null ? 0 : p.getSort())
-                        .thenComparing(Permission::getId))
-                .map(Permission::getCode)
-                .distinct()
-                .toList();
     }
 
     /** 部门名；未设部门或部门已删除时返回 null */

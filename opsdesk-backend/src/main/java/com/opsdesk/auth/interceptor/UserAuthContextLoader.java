@@ -25,14 +25,14 @@ import java.util.stream.Collectors;
  * <p>链路：{@code user_role → role → role_permission → permission}，共 4 条**批量**查询，
  * 全部命中主键 / 最左前缀，无循环内查库、无 {@code SELECT *}。
  *
- * <p><b>本类只查库、不带缓存</b>，是 D1-02 的临时落点 ——
- * 规格基线 §23.2 要求「每次请求读 Redis {@code auth:perms:{userId}}（TTL 10 分钟），
- * 未命中回源查库」，那套缓存 + {@code evict(userId)} 是 <b>D2-01 的交付物</b>。
- * D2-01 落地后，本类应被 {@code PermissionLoader} 取代（拦截器与登录都改调它）。
+ * <p><b>本类只查库、不带缓存</b> —— 它是 {@link com.opsdesk.auth.service.PermissionLoader}
+ * （D2-01）的<b>回源实现</b>：缓存命中时根本走不到这里；未命中或缓存是脏数据时，
+ * 由 {@code PermissionLoader} 调 {@link #load} 回源，再回填 Redis
+ * {@code auth:perms:{userId}}（规格基线 §23.2，TTL 10 分钟）。
  *
- * <p>之所以在 D1-02 里重复了一段与登录同构的查询，是为了守住本工单
- * 「其余文件一律不要动」的边界 —— 不回头改 D1-01 已验收的 {@code AuthServiceImpl}。
- * 这段重复的寿命只有一张工单。
+ * <p>D1-01 的 {@code AuthServiceImpl} 里原本有一份与这里同构的查询（D1-02 刻意没动它，
+ * 以守住当时的改动边界）。D2-01 起，登录与鉴权拦截器<b>都改为调用 {@code PermissionLoader}</b>，
+ * 那份重复已删除 —— 至此「用户 → 角色 → 权限码」的查询<b>全项目只剩这里一份</b>。
  */
 @Component
 public class UserAuthContextLoader {
