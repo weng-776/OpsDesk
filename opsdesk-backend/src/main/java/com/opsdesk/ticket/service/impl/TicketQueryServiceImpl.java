@@ -7,10 +7,13 @@ import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
+import com.opsdesk.organization.entity.Department;
+import com.opsdesk.organization.service.DepartmentService;
 import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
+import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import com.opsdesk.user.entity.User;
 import com.opsdesk.user.service.UserService;
@@ -60,13 +63,16 @@ public class TicketQueryServiceImpl implements TicketQueryService {
 
     private final TicketService ticketService;
     private final UserService userService;
+    private final DepartmentService departmentService;
     private final TicketDataScopeHelper dataScopeHelper;
 
     public TicketQueryServiceImpl(TicketService ticketService,
                                   UserService userService,
+                                  DepartmentService departmentService,
                                   TicketDataScopeHelper dataScopeHelper) {
         this.ticketService = ticketService;
         this.userService = userService;
+        this.departmentService = departmentService;
         this.dataScopeHelper = dataScopeHelper;
     }
 
@@ -80,6 +86,52 @@ public class TicketQueryServiceImpl implements TicketQueryService {
     @Override
     public PageResult<TicketListVO> mine(TicketQuery query) {
         return doPage(query, ScopeMode.SELF_ONLY);
+    }
+
+    /**
+     * 工单详情（API 文档 §8.4）。
+     *
+     * <p><b>⚠️ 两个判断的先后顺序是本方法最关键的地方</b>：
+     * <pre>
+     * ① 查不到 → 40400
+     * ② 查到了 → assertVisible 判数据范围 → 不可见 40301
+     * </pre>
+     * 顺序<b>不能反</b>：若先判可见性，一个不存在的 id 也会得到 40301，
+     * 攻击者就能从「40301 而不是 40400」<b>推断出这个 id 是存在的</b>。
+     * §2.7 明确要求「越权返回 40301 而不是 40400 —— 但实现上需保证不泄露资源是否存在性」。
+     *
+     * <p>本方法用 {@code getById}（全字段），不做列裁剪 —— 详情要的就是全部业务字段。
+     */
+    @Override
+    public TicketDetailVO detail(Long id) {
+        Ticket ticket = ticketService.getById(id);
+        if (ticket == null) {
+            throw BizException.notFound("工单不存在");
+        }
+        // 数据范围校验（不是过滤）：不可见抛 40301。
+        // 未登录时 UserContext.get() 为 null → Helper 判 NONE → 40301（fail-closed）；
+        // 正常情况轮不到这里 —— AuthInterceptor 在 order 0 已经先返回 40100 了
+        dataScopeHelper.assertVisible(ticket, UserContext.get());
+
+        TicketDetailVO vo = new TicketDetailVO();
+        // 复用列表的 12 个字段装配（继承关系下直接填基类字段）
+        fillListFields(vo, ticket, loadDisplayNames(List.of(ticket)));
+        vo.setDescription(ticket.getDescription());
+        vo.setSource(ticket.getSource());
+        vo.setCreatorId(ticket.getCreatorId());
+        vo.setDepartmentId(ticket.getDepartmentId());
+        vo.setAssigneeId(ticket.getAssigneeId());
+        vo.setDepartmentName(loadDepartmentName(ticket.getDepartmentId()));
+        vo.setSlaPolicyId(ticket.getSlaPolicyId());
+        vo.setResponseDeadline(ticket.getResponseDeadline());
+        vo.setFirstResponseAt(ticket.getFirstResponseAt());
+        vo.setSlaResponseState(ticket.getSlaResponseState());
+        vo.setSlaPausedMinutes(ticket.getSlaPausedMinutes());
+        vo.setReopenCount(ticket.getReopenCount());
+        vo.setCancelReason(ticket.getCancelReason());
+        vo.setResolvedAt(ticket.getResolvedAt());
+        vo.setClosedAt(ticket.getClosedAt());
+        return vo;
     }
 
     /** 数据范围模式：按角色叠加 / 强制只看自己 */
@@ -188,7 +240,41 @@ public class TicketQueryServiceImpl implements TicketQueryService {
         if (tickets.isEmpty()) {
             return List.of();
         }
+        Map<Long, String> displayNames = loadDisplayNames(tickets);
+        return tickets.stream().map(ticket -> {
+            TicketListVO vo = new TicketListVO();
+            fillListFields(vo, ticket, displayNames);
+            return vo;
+        }).toList();
+    }
 
+    /**
+     * 把 {@link TicketListVO}（§16.7）的 12 个字段填进 vo。
+     *
+     * <p>抽成方法是为了<b>列表与详情共用</b> —— {@link TicketDetailVO} 继承 {@code TicketListVO}，
+     * 详情直接把自己的实例传进来即可，不必把 12 个 setter 再抄一遍（抄一遍迟早会漂移）。
+     */
+    private void fillListFields(TicketListVO vo, Ticket ticket, Map<Long, String> displayNames) {
+        vo.setId(ticket.getId());
+        vo.setTicketNo(ticket.getTicketNo());
+        vo.setTitle(ticket.getTitle());
+        vo.setType(ticket.getType());
+        vo.setCategory(ticket.getCategory());
+        vo.setPriority(ticket.getPriority());
+        // ⚠️ 这是 VO 赋值（把实体里的值搬到出参上），与「状态机流转」毫无关系。
+        //    项目审查脚本的 M1「直接 setStatus」会把它报出来 —— 人工判定为**误报**：
+        //    真正要拦的是「对已存在的工单直接改状态」（§8），不是「构造出参对象」。
+        vo.setStatus(ticket.getStatus());
+        vo.setCreatorName(displayNames.get(ticket.getCreatorId()));
+        vo.setAssigneeName(ticket.getAssigneeId() == null
+                ? null : displayNames.get(ticket.getAssigneeId()));
+        vo.setSlaResolutionState(ticket.getSlaResolutionState());
+        vo.setResolutionDeadline(ticket.getResolutionDeadline());
+        vo.setCreatedAt(ticket.getCreatedAt());
+    }
+
+    /** 整页一次性把创建人 / 处理人姓名批量查出来（1 条 IN 查询，与行数无关） */
+    private Map<Long, String> loadDisplayNames(List<Ticket> tickets) {
         Set<Long> userIds = new HashSet<>();
         for (Ticket ticket : tickets) {
             if (ticket.getCreatorId() != null) {
@@ -198,30 +284,18 @@ public class TicketQueryServiceImpl implements TicketQueryService {
                 userIds.add(ticket.getAssigneeId());
             }
         }
-        Map<Long, String> displayNames = userIds.isEmpty() ? Map.of()
+        return userIds.isEmpty() ? Map.of()
                 : userService.listByIds(userIds).stream()
                         .collect(Collectors.toMap(User::getId, this::displayNameOf));
+    }
 
-        return tickets.stream().map(ticket -> {
-            TicketListVO vo = new TicketListVO();
-            vo.setId(ticket.getId());
-            vo.setTicketNo(ticket.getTicketNo());
-            vo.setTitle(ticket.getTitle());
-            vo.setType(ticket.getType());
-            vo.setCategory(ticket.getCategory());
-            vo.setPriority(ticket.getPriority());
-            // ⚠️ 这是 VO 赋值（把实体里的值搬到出参上），与「状态机流转」毫无关系。
-            //    项目审查脚本的 M1「直接 setStatus」会把它报出来 —— 人工判定为**误报**：
-            //    真正要拦的是「对已存在的工单直接改状态」（§8），不是「构造出参对象」。
-            vo.setStatus(ticket.getStatus());
-            vo.setCreatorName(displayNames.get(ticket.getCreatorId()));
-            vo.setAssigneeName(ticket.getAssigneeId() == null
-                    ? null : displayNames.get(ticket.getAssigneeId()));
-            vo.setSlaResolutionState(ticket.getSlaResolutionState());
-            vo.setResolutionDeadline(ticket.getResolutionDeadline());
-            vo.setCreatedAt(ticket.getCreatedAt());
-            return vo;
-        }).toList();
+    /** 部门名；未设部门或部门已删除时返回 null（详情只有一行，按主键查一次即可） */
+    private String loadDepartmentName(Long departmentId) {
+        if (departmentId == null) {
+            return null;
+        }
+        Department department = departmentService.getById(departmentId);
+        return department == null ? null : department.getName();
     }
 
     /** 姓名优先用 nickname，缺失时退回 username（两者都不该为 null，但别让 toMap 抛 NPE） */

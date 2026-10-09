@@ -2,6 +2,7 @@ package com.opsdesk.ticket.service;
 
 import com.opsdesk.common.PageResult;
 import com.opsdesk.ticket.dto.TicketQuery;
+import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 
 /**
@@ -27,4 +28,11 @@ public interface TicketQueryService {
      * 我的工单（API 文档 §8.2）—— 只看自己创建的（{@code creator_id = 当前用户}）。
      */
     PageResult<TicketListVO> mine(TicketQuery query);
+
+    /**
+     * 工单详情（API 文档 §8.4）—— 数据范围<b>校验</b>（不是过滤）：不可见抛 40301。
+     *
+     * @throws com.opsdesk.common.BizException 工单不存在（40400）；数据范围外（40301）
+     */
+    TicketDetailVO detail(Long id);
 }

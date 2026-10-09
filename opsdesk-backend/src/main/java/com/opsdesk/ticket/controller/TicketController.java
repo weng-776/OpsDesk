@@ -10,9 +10,11 @@ import com.opsdesk.ticket.service.TicketCreateService;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.support.IdempotencyGuard;
 import com.opsdesk.ticket.vo.TicketCreatedVO;
+import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -78,5 +80,20 @@ public class TicketController {
     @GetMapping("/mine")
     public Result<PageResult<TicketListVO>> mine(@Valid TicketQuery query) {
         return Result.ok(ticketQueryService.mine(query));
+    }
+
+    /**
+     * 工单详情（§8.4）。
+     *
+     * <p>鉴权 {@code ticket:detail}；数据范围是<b>校验</b>而非过滤 —— 不可见返回 {@code 40301}，
+     * 不存在返回 {@code 40400}（两者不能混，见 service 里的顺序说明）。
+     *
+     * <p>路径 {@code /{id}} 排在 {@code /mine} 之后注册，Spring 会优先匹配字面量路径
+     * {@code /mine}，不会被 {@code /{id}} 吃掉。
+     */
+    @RequirePermission(PermissionCodes.TICKET_DETAIL)
+    @GetMapping("/{id}")
+    public Result<TicketDetailVO> detail(@PathVariable Long id) {
+        return Result.ok(ticketQueryService.detail(id));
     }
 }

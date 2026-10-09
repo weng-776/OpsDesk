@@ -9,12 +9,14 @@ import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketCategory;
 import com.opsdesk.common.enums.TicketPriority;
+import com.opsdesk.common.enums.TicketSource;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.common.enums.TicketType;
 import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
+import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -24,9 +26,12 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.lang.reflect.Field;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -295,6 +300,130 @@ class TicketQueryServiceTest {
         assertThat(rows.get(0).getDeleted()).as("同理 deleted").isNull();
     }
 
+    // ==================== D3-03 工单详情 ====================
+
+    @Test
+    @DisplayName("验收1：可见范围内正常返回，字段与 §16.8 对齐（继承 §16.7 的 12 个 + 新增 15 个）")
+    void 详情正常返回() {
+        TicketDetailVO vo = detailAs(EMP_WANG, Role.EMPLOYEE, 1L);
+
+        // ---- 继承自 TicketListVO 的 12 个 ----
+        assertThat(vo.getId()).isEqualTo(1L);
+        assertThat(vo.getTicketNo()).isEqualTo("OD2026100600001");
+        assertThat(vo.getTitle()).isEqualTo("公司 VPN 无法连接");
+        assertThat(vo.getType()).isEqualTo(TicketType.INCIDENT);
+        assertThat(vo.getCategory()).isEqualTo(TicketCategory.NETWORK);
+        assertThat(vo.getPriority()).isEqualTo(TicketPriority.P2);
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.OPEN);
+        assertThat(vo.getCreatorName()).isEqualTo("王五");
+        assertThat(vo.getAssigneeName()).as("未分派").isNull();
+        assertThat(vo.getSlaResolutionState()).isEqualTo(SlaState.NORMAL);
+        assertThat(vo.getResolutionDeadline()).isNotNull();
+        assertThat(vo.getCreatedAt()).isNotNull();
+
+        // ---- 本类新增的 15 个 ----
+        assertThat(vo.getDescription()).startsWith("今天上午开始 VPN");
+        assertThat(vo.getSource()).isEqualTo(TicketSource.WEB);
+        assertThat(vo.getCreatorId()).isEqualTo(EMP_WANG);
+        assertThat(vo.getDepartmentId()).as("创建人部门快照").isEqualTo(5L);
+        assertThat(vo.getAssigneeId()).isNull();
+        assertThat(vo.getDepartmentName()).isEqualTo("财务部");
+        assertThat(vo.getSlaPolicyId()).as("§9.1 策略版本").isEqualTo(2L);
+        assertThat(vo.getResponseDeadline()).isNotNull();
+        assertThat(vo.getFirstResponseAt()).as("OPEN 工单还没被受理").isNull();
+        assertThat(vo.getSlaResponseState()).isEqualTo(SlaState.NORMAL);
+        assertThat(vo.getSlaPausedMinutes()).isZero();
+        assertThat(vo.getReopenCount()).isZero();
+        assertThat(vo.getCancelReason()).isNull();
+        assertThat(vo.getResolvedAt()).isNull();
+        assertThat(vo.getClosedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("验收1：已关闭工单的 SLA 生命周期字段有值（firstResponseAt / resolvedAt / closedAt）")
+    void 详情带SLA生命周期字段() {
+        // 工单 4：CLOSED，assignee=agent_zhang(2)
+        TicketDetailVO vo = detailAs(AGENT_ZHANG, Role.AGENT, 4L);
+
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.CLOSED);
+        assertThat(vo.getFirstResponseAt()).isNotNull();
+        assertThat(vo.getResolvedAt()).isNotNull();
+        assertThat(vo.getClosedAt()).isNotNull();
+        assertThat(vo.getAssigneeId()).isEqualTo(AGENT_ZHANG);
+        assertThat(vo.getAssigneeName()).isEqualTo("张三");
+        assertThat(vo.getDepartmentName()).isEqualTo("人事部");
+    }
+
+    @Test
+    @DisplayName("不返回 Entity 内部字段（用反射看 VO 到底声明了什么，比「响应里没有」更直接）")
+    void 详情VO不暴露内部字段() {
+        Set<String> own = Arrays.stream(TicketDetailVO.class.getDeclaredFields())
+                .map(Field::getName).collect(Collectors.toSet());
+        Set<String> inherited = Arrays.stream(TicketListVO.class.getDeclaredFields())
+                .map(Field::getName).collect(Collectors.toSet());
+
+        assertThat(own).as("§16.8 新增的恰好这 15 个").containsExactlyInAnyOrder(
+                "description", "source", "creatorId", "departmentId", "assigneeId", "departmentName",
+                "slaPolicyId", "responseDeadline", "firstResponseAt", "slaResponseState",
+                "slaPausedMinutes", "reopenCount", "cancelReason", "resolvedAt", "closedAt");
+        assertThat(inherited).as("§16.7 的 12 个").hasSize(12);
+
+        assertThat(own).as("§16.8 里这三个字段本单刻意不做（归 D3-05 / AI 模块 / D4-01）")
+                .doesNotContain("attachments", "aiAnalysis", "canOperate");
+        assertThat(own).as("Entity 的内部字段一个都不该出现")
+                .doesNotContain("version", "deleted", "slaPausedAt",
+                        "slaWarningNotified", "slaBreachNotified", "rawResponse");
+    }
+
+    @Test
+    @DisplayName("验收1（§25.3 #2）：EMP_WANG 查他人工单 → 40301")
+    void 详情employee查他人工单40301() {
+        // 工单 2 是 emp_zhao(5) 创建的
+        assertThat(catchBiz(() -> detailAs(EMP_WANG, Role.EMPLOYEE, 2L)))
+                .as("数据范围外 → 40301（不是 40400）").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+        // 自己的工单能看（反证不是恒拒）
+        assertThat(detailAs(EMP_WANG, Role.EMPLOYEE, 1L).getId()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("验收2（§25.3 #5）：AGENT 查「非本人/非公共池/非本部门」→ 40301")
+    void 详情agent查范围外工单40301() {
+        // 工单 3：assignee=agent_li(3)、WAITING_CONFIRM、财务部(5)
+        assertThat(catchBiz(() -> detailAs(AGENT_ZHANG, Role.AGENT, 3L)))
+                .isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+        // 受理人本人可见
+        assertThat(detailAs(AGENT_LI, Role.AGENT, 3L).getId()).isEqualTo(3L);
+        // 公共池的工单 1 可见（§8.3 的 ②）
+        assertThat(detailAs(AGENT_ZHANG, Role.AGENT, 1L).getId()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("验收3：不存在的 id → 40400")
+    void 详情不存在返回40400() {
+        assertThat(catchBiz(() -> detailAs(ADMIN, Role.ADMIN, 999_999L)))
+                .isEqualTo(ErrorCode.NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("⚠️ 顺序关键：数据范围受限的用户查不存在的 id → 40400 而不是 40301（不泄露存在性）")
+    void 详情不存在与越权不能混() {
+        // 若实现里「先判可见性、再判存在性」，一个不存在的 id 也会得到 40301 ——
+        // 攻击者就能从「40301 而不是 40400」推断出这个 id 是存在的（§2.7 明确禁止）
+        assertThat(catchBiz(() -> detailAs(EMP_WANG, Role.EMPLOYEE, 999_999L)))
+                .as("不存在的 id 一律 40400").isEqualTo(ErrorCode.NOT_FOUND);
+        // 对照：存在但越权 → 40301
+        assertThat(catchBiz(() -> detailAs(EMP_WANG, Role.EMPLOYEE, 2L)))
+                .as("存在但越权 → 40301").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+    }
+
+    @Test
+    @DisplayName("ADMIN 能看全部工单的详情（§8.2 ALL）")
+    void 详情admin看全部() {
+        for (long id = 1L; id <= 5L; id++) {
+            assertThat(detailAs(ADMIN, Role.ADMIN, id).getId()).isEqualTo(id);
+        }
+    }
+
     // ==================== 边界 ====================
 
     @Test
@@ -328,6 +457,16 @@ class TicketQueryServiceTest {
         setCurrentUser(userId, role);
         try {
             return ticketQueryService.page(query);
+        }
+        finally {
+            UserContext.clear();
+        }
+    }
+
+    private TicketDetailVO detailAs(long userId, Role role, Long ticketId) {
+        setCurrentUser(userId, role);
+        try {
+            return ticketQueryService.detail(ticketId);
         }
         finally {
             UserContext.clear();
