@@ -7,10 +7,13 @@ import com.opsdesk.common.constant.PermissionCodes;
 import com.opsdesk.ticket.dto.CommentCreateDTO;
 import com.opsdesk.ticket.dto.TicketCreateDTO;
 import com.opsdesk.ticket.dto.TicketQuery;
+import com.opsdesk.ticket.service.AttachmentService;
 import com.opsdesk.ticket.service.TicketCommentBizService;
 import com.opsdesk.ticket.service.TicketCreateService;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.support.IdempotencyGuard;
+import com.opsdesk.ticket.vo.AttachmentUploadVO;
+import com.opsdesk.ticket.vo.AttachmentVO;
 import com.opsdesk.ticket.vo.TicketCommentVO;
 import com.opsdesk.ticket.vo.TicketCreatedVO;
 import com.opsdesk.ticket.vo.TicketDetailVO;
@@ -22,12 +25,21 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
 
 /**
  * 工单接口（API 文档 §8）
  *
- * <p>D3-01 创建、D3-02 列表与我的工单、D3-03 详情、D3-04 评论；状态流转归 D4 系列。
+ * <p>D3-01 创建、D3-02 列表与我的工单、D3-03 详情、D3-04 评论、D3-05 附件上传与列表；
+ * 状态流转归 D4 系列。
+ *
+ * <p>⚠️ 附件<b>下载</b>不在这里 —— 它是 {@code GET /api/attachments/{id}/download}，
+ * 路径前缀是 {@code /api/attachments} 而不是 {@code /api/tickets}，
+ * 见 {@link AttachmentController}。
  *
  * <p>鉴权：需登录（{@code AuthInterceptor}）+ 权限码（{@code ticket:create} / {@code ticket:list}）。
  * 数据范围由 {@code TicketDataScopeHelper} 在 service 层叠加，Controller 不参与。
@@ -39,13 +51,16 @@ public class TicketController {
     private final TicketCreateService ticketCreateService;
     private final TicketQueryService ticketQueryService;
     private final TicketCommentBizService ticketCommentBizService;
+    private final AttachmentService attachmentService;
 
     public TicketController(TicketCreateService ticketCreateService,
                             TicketQueryService ticketQueryService,
-                            TicketCommentBizService ticketCommentBizService) {
+                            TicketCommentBizService ticketCommentBizService,
+                            AttachmentService attachmentService) {
         this.ticketCreateService = ticketCreateService;
         this.ticketQueryService = ticketQueryService;
         this.ticketCommentBizService = ticketCommentBizService;
+        this.attachmentService = attachmentService;
     }
 
     /**
@@ -131,5 +146,38 @@ public class TicketController {
     public Result<TicketCommentVO> addComment(@PathVariable Long id,
                                               @Valid @RequestBody CommentCreateDTO dto) {
         return Result.ok(ticketCommentBizService.add(id, dto));
+    }
+
+    // ==================== 附件（D3-05，§8.9 / §8.10） ====================
+
+    /**
+     * 上传附件（§8.9）—— {@code multipart/form-data}，字段名 {@code file}。
+     *
+     * <p>鉴权用 {@code ticket:comment}：附件是工单的补充材料（报错截图、日志），
+     * 与评论同属「参与这张工单」的行为；规格 §3.6 没有 {@code attachment:*} 权限码
+     * （已与用户确认复用本码）。
+     *
+     * <p>约束：单文件 ≤10MB；类型白名单 {@code jpg/png/gif/pdf/txt/log/docx/xlsx}；
+     * 存储名 UUID 化。详细校验链见 {@code AttachmentServiceImpl}。
+     *
+     * <p>⚠️ {@code @RequestParam("file")} 显式写名字 —— 不写的话依赖参数名保留
+     * （{@code -parameters} 编译选项），换个构建方式就默默坏了。
+     */
+    @RequirePermission(PermissionCodes.TICKET_COMMENT)
+    @PostMapping("/{id}/attachments")
+    public Result<AttachmentUploadVO> uploadAttachment(@PathVariable Long id,
+                                                       @RequestParam("file") MultipartFile file) {
+        return Result.ok(attachmentService.upload(id, file));
+    }
+
+    /**
+     * 附件列表（§8.10）—— 不分页（§8.10 的响应是 {@code AttachmentVO[]}，不是分页结构）。
+     *
+     * <p>鉴权用 {@code ticket:comment} 与上传保持一致 —— 上传者与查看者是同一批人。
+     */
+    @RequirePermission(PermissionCodes.TICKET_COMMENT)
+    @GetMapping("/{id}/attachments")
+    public Result<List<AttachmentVO>> listAttachments(@PathVariable Long id) {
+        return Result.ok(attachmentService.list(id));
     }
 }

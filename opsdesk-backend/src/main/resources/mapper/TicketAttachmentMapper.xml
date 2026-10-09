@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  工单附件 Mapper XML（工单 D3-05）
+
+  规格依据：API 文档 §8.10（附件列表）/ §16.11（AttachmentVO）
+
+  ⚠️ 为什么这里要写 XML，而不是用 LambdaQueryWrapper + 在内存里装配 uploaderName：
+    列表需要 uploaderName，它在 `user` 表里。可选做法有三种，都不如 XML：
+      ① 先查附件、再 listByIds 批量查 user → 多一次往返，且是「Java 侧 JOIN」
+      ② wrapper.apply("LEFT JOIN user ...") → 撞 SOP §5 红区「手写 SQL 拼接」
+      ③ XML 里写完整的、参数化的 JOIN → 本文件的做法
+    选 ③ 的理由：SQL 是静态的、参数用 #{} 占位（不拼字符串，无注入面），
+    且 JOIN 交给 MySQL 做（走 idx_attach_ticket 后再点查 user 主键，代价极低）。
+
+  ⚠️ 参数写法都用 #{}，绝不用 ${} —— ${} 是字符串拼接，是 SQL 注入的入口（SOP §5）。
+-->
+
+<mapper namespace="com.opsdesk.ticket.mapper.TicketAttachmentMapper">
+
+    <!--
+      按工单查附件列表（含上传人姓名）。
+
+      排序：created_at ASC + id ASC（先传的先出现；id 做 tiebreaker，
+      同一秒多次上传时顺序稳定，避免分页/刷新时列表抖动）。
+
+      COALESCE(u.nickname, u.username)：昵称优先，无昵称回落用户名 ——
+      与 D3-02 列表 / D3-04 评论的显示名口径一致（三处必须同规则，否则同一个人在不同页面显示不同名字）。
+
+      LEFT JOIN：uploader 理论上不会缺失（uploader_id NOT NULL），
+      但一旦用户被物理删除，LEFT JOIN 让附件仍能列出（uploaderName 为 null），
+      而不是整条附件从列表里消失。
+    -->
+    <select id="selectByTicketIdWithUploader"
+            resultType="com.opsdesk.ticket.vo.AttachmentVO">
+        SELECT a.id             AS id,
+               a.file_name      AS fileName,
+               a.file_size      AS fileSize,
+               a.content_type   AS contentType,
+               COALESCE(u.nickname, u.username) AS uploaderName,
+               a.created_at     AS createdAt
+        FROM ticket_attachment a
+                 LEFT JOIN `user` u ON u.id = a.uploader_id
+        WHERE a.ticket_id = #{ticketId}
+        ORDER BY a.created_at ASC, a.id ASC
+    </select>
+
+</mapper>
