@@ -5,11 +5,13 @@ import com.opsdesk.common.PageResult;
 import com.opsdesk.common.Result;
 import com.opsdesk.common.constant.PermissionCodes;
 import com.opsdesk.ticket.dto.CommentCreateDTO;
+import com.opsdesk.ticket.dto.TicketAssignDTO;
 import com.opsdesk.ticket.dto.TicketCreateDTO;
 import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.service.AttachmentService;
 import com.opsdesk.ticket.service.TicketCommentBizService;
 import com.opsdesk.ticket.service.TicketCreateService;
+import com.opsdesk.ticket.service.TicketFlowService;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.support.IdempotencyGuard;
 import com.opsdesk.ticket.vo.AttachmentUploadVO;
@@ -52,15 +54,18 @@ public class TicketController {
     private final TicketQueryService ticketQueryService;
     private final TicketCommentBizService ticketCommentBizService;
     private final AttachmentService attachmentService;
+    private final TicketFlowService ticketFlowService;
 
     public TicketController(TicketCreateService ticketCreateService,
                             TicketQueryService ticketQueryService,
                             TicketCommentBizService ticketCommentBizService,
-                            AttachmentService attachmentService) {
+                            AttachmentService attachmentService,
+                            TicketFlowService ticketFlowService) {
         this.ticketCreateService = ticketCreateService;
         this.ticketQueryService = ticketQueryService;
         this.ticketCommentBizService = ticketCommentBizService;
         this.attachmentService = attachmentService;
+        this.ticketFlowService = ticketFlowService;
     }
 
     /**
@@ -146,6 +151,50 @@ public class TicketController {
     public Result<TicketCommentVO> addComment(@PathVariable Long id,
                                               @Valid @RequestBody CommentCreateDTO dto) {
         return Result.ok(ticketCommentBizService.add(id, dto));
+    }
+
+    // ==================== 状态流转（D4-01，§8.12 / 规格基线 §7.2） ====================
+
+    /**
+     * 分派工单（§8.12 #1，矩阵 #2）：{@code OPEN → ASSIGNED}。
+     *
+     * <p>权限 {@code ticket:assign}；角色 AGENT / ADMIN。
+     * 请求体 {@code { "assigneeId": 3 }} —— 被分派人必须是启用的 AGENT / ADMIN。
+     *
+     * <p>⚠️ 状态流转的判定<b>不在 Controller</b>：这里只声明「要执行 assign 这个动作」，
+     * 「当前状态能不能 assign、这个角色能不能 assign」由 {@code TicketStateMachine} 决定。
+     */
+    @RequirePermission(PermissionCodes.TICKET_ASSIGN)
+    @PostMapping("/{id}/assign")
+    public Result<TicketDetailVO> assign(@PathVariable Long id,
+                                         @Valid @RequestBody TicketAssignDTO dto) {
+        return Result.ok(ticketFlowService.assign(id, dto));
+    }
+
+    /**
+     * 受理工单（§8.12 #3，矩阵 #3）：{@code OPEN → ASSIGNED}，处理人 = 当前用户。
+     *
+     * <p>权限 {@code ticket:accept}；角色 AGENT / ADMIN。无请求体。
+     */
+    @RequirePermission(PermissionCodes.TICKET_ACCEPT)
+    @PostMapping("/{id}/accept")
+    public Result<TicketDetailVO> accept(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.accept(id));
+    }
+
+    /**
+     * 开始处理（§8.12 #4，矩阵 #5）：{@code ASSIGNED → IN_PROGRESS}。
+     *
+     * <p>权限 {@code ticket:process}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>副作用：{@code first_response_at} 为空时写入当前时间（§9.3「响应」的判定点）。
+     * 注：按 §9.3 / §8.12，assign / accept 时<b>已经</b>写过它；
+     * 这里的「若空」是兜底（如历史数据或直接改库导致为空）。
+     */
+    @RequirePermission(PermissionCodes.TICKET_PROCESS)
+    @PostMapping("/{id}/start")
+    public Result<TicketDetailVO> start(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.start(id));
     }
 
     // ==================== 附件（D3-05，§8.9 / §8.10） ====================

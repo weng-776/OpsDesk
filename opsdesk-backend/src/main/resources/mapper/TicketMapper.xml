@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  工单 Mapper XML（工单 D4-01）
+
+  规格依据：规格基线 §7.4（状态流转实现约束）
+
+  ⚠️ 为什么这条 UPDATE 必须写在 XML，而不是用 updateById：
+    §7.4 的 SQL 是「乐观锁 + 状态前置条件」双条件 —— `WHERE status = #{from} AND version = #{version}`。
+    实体上的 @Version 只让 MP 追加 version 条件，**不会带 status**。
+    少了 status 就漏掉一类并发：A 把工单从 ASSIGNED 推到 IN_PROGRESS 之后，
+    B 若拿着相同 version 到达，仍会在「已经不是 ASSIGNED」的状态上强行流转。
+    带 status 条件才能保证「我看到的状态到现在没变过」。
+
+    而且这是自定义 SQL，按 SOP §5 红区必须走 XML，不用 wrapper.apply("raw sql")。
+
+  ⚠️ 参数一律 #{}，绝不用 ${}（${} 是字符串拼接 = SQL 注入入口）。
+-->
+
+<mapper namespace="com.opsdesk.ticket.mapper.TicketMapper">
+
+    <!--
+      状态流转 CAS 更新。
+
+      影响行数为 0 = CAS 失败（status 或 version 与期望不符），
+      调用方 TicketFlowServiceImpl 据此抛 40900（§25.4 用例 #2「两人同时 accept」）。
+
+      assignee_id / first_response_at 用 <if> 做「可选的列更新」：
+        · assign / accept 需要改 assignee_id；start 不需要（传 null → 跳过）
+        · first_response_at 只在「为空」时才由 Java 侧传值（§9.3 首次响应）；
+          已响应过则传 null → 跳过 → 保留首轮值（§9.6「不重置」）
+
+      注意 SET 子句里逗号的写法：先写不带逗号的两项，可选列各自以「逗号开头」追加，
+      这样无论哪几个可选列生效，语法都成立。
+    -->
+    <update id="updateStatusCas">
+        UPDATE ticket
+        SET status = #{to},
+            version = version + 1
+        <if test="assigneeId != null">, assignee_id = #{assigneeId}</if>
+        <if test="firstResponseAt != null">, first_response_at = #{firstResponseAt}</if>
+        WHERE id = #{id}
+          AND status = #{from}
+          AND version = #{version}
+          AND deleted = 0
+    </update>
+
+</mapper>

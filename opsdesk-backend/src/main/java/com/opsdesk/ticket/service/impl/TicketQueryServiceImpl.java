@@ -112,7 +112,31 @@ public class TicketQueryServiceImpl implements TicketQueryService {
         // 未登录时 UserContext.get() 为 null → Helper 判 NONE → 40301（fail-closed）；
         // 正常情况轮不到这里 —— AuthInterceptor 在 order 0 已经先返回 40100 了
         dataScopeHelper.assertVisible(ticket, UserContext.get());
+        return buildDetail(ticket);
+    }
 
+    /**
+     * 状态流转后的快照（§8.12）—— <b>不校验数据范围</b>。
+     *
+     * <p>理由见 {@link TicketQueryService#detailForFlow(Long)}：流转会改变工单归属，
+     * 操作者可能因此不再可见（典型：assign 给他人后离开公共池），
+     * 此时不能再校验一次，否则「库里改成功、接口返 40301」。
+     * 调用方（{@code TicketFlowService}）已在流转入口校验过权限与范围。
+     */
+    @Override
+    public TicketDetailVO detailForFlow(Long id) {
+        Ticket ticket = ticketService.getById(id);
+        if (ticket == null) {
+            throw BizException.notFound("工单不存在");
+        }
+        return buildDetail(ticket);
+    }
+
+    /**
+     * 装配详情 VO —— {@link #detail(Long)} 与 {@link #detailForFlow(Long)} 共用，
+     * 保证两条路径的字段装配完全一致（不会一边加字段、另一边忘加）。
+     */
+    private TicketDetailVO buildDetail(Ticket ticket) {
         TicketDetailVO vo = new TicketDetailVO();
         // 复用列表的 12 个字段装配（继承关系下直接填基类字段）
         fillListFields(vo, ticket, loadDisplayNames(List.of(ticket)));

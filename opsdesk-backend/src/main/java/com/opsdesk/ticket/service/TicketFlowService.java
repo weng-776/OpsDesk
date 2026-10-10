@@ -1,0 +1,52 @@
+package com.opsdesk.ticket.service;
+
+import com.opsdesk.ticket.dto.TicketAssignDTO;
+import com.opsdesk.ticket.vo.TicketDetailVO;
+
+/**
+ * 工单状态流转（工单 D4-01 起）
+ *
+ * <p>规格依据：规格基线 §7.2 状态 × 角色 × 动作矩阵、§7.4；API 文档 §8.12。
+ *
+ * <h2>所有流转方法的统一契约（§8.12 抬头）</h2>
+ * <pre>
+ * 状态前置校验 → 权限校验 → 数据范围校验 → 写历史 → 写审计 → 改 SLA → 发事件
+ * </pre>
+ * 其中「写审计 / 发事件 / 改 SLA」分属 Day 6 / D4-03，本单只做前三步 + 写历史。
+ *
+ * <p>返回 {@link TicketDetailVO}（最新工单快照）—— §8.12「返回最新工单快照，便于前端直接刷新」。
+ *
+ * <p>本接口按<b>动作</b>命名方法，而不是按状态：状态机才是权威，
+ * 「谁在什么状态能做什么」由 {@code TicketStateMachine} 决定，不在这里判断。
+ */
+public interface TicketFlowService {
+
+    /**
+     * 分派工单（矩阵 #2）：{@code OPEN → ASSIGNED}，可指定处理人。
+     *
+     * <p>权限：{@code ticket:assign}；角色 AGENT / ADMIN。
+     *
+     * @param ticketId 工单 id
+     * @param dto      含 {@code assigneeId}；被分派人必须是启用的 AGENT / ADMIN
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO assign(Long ticketId, TicketAssignDTO dto);
+
+    /**
+     * 受理工单（矩阵 #3）：{@code OPEN → ASSIGNED}，{@code assignee_id = 当前用户}。
+     *
+     * <p>权限：{@code ticket:accept}；角色 AGENT / ADMIN。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO accept(Long ticketId);
+
+    /**
+     * 开始处理（矩阵 #5）：{@code ASSIGNED → IN_PROGRESS}。
+     *
+     * <p>权限：{@code ticket:process}；仅当前 assignee 或 ADMIN。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO start(Long ticketId);
+}
