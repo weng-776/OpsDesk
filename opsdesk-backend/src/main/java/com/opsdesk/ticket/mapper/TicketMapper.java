@@ -1,6 +1,7 @@
 package com.opsdesk.ticket.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.statemachine.TicketStatePatch;
@@ -81,5 +82,46 @@ public interface TicketMapper extends BaseMapper<Ticket> {
                                 @Param("to") TicketStatus to,
                                 @Param("version") Integer version,
                                 @Param("patch") TicketStatePatch patch);
+
+    /**
+     * SLA 定时扫描的结果回写（工单 D5-03，规格基线 §9.5）。
+     *
+     * <p>只改 SLA 相关列，<b>不碰 {@code status}，也绝不 bump {@code version}</b>。
+     *
+     * <h2>⚠️ 为什么不能复用 {@link #updateStatusCasExtended}</h2>
+     * 那条 SQL 会写 {@code status = #{to}} 并且 {@code version = version + 1}。
+     * 扫描只是刷新<b>派生数据</b>（SLA 状态是算出来的），它：
+     * <ul>
+     *   <li><b>不该改状态</b> —— 状态只由 §7.2 矩阵的流转动作改变；</li>
+     *   <li><b>不该 bump version</b> —— 否则每 5 分钟一次扫描就会让所有未关闭工单的
+     *       {@code version} 全部前进，用户此时提交的任何流转都会 CAS 失败 → 莫名其妙的 40900。
+     *       SLA 状态丢一次竞争是无害的（下一轮 5 分钟后自然纠正），不值得为它引入冲突。</li>
+     * </ul>
+     *
+     * <h2>⚠️ 两个标志位只「置 1」不清 0</h2>
+     * 用 {@code <if>} 条件追加列（而不是无条件写值），所以扫描<b>永远不会</b>把
+     * {@code sla_warning_notified} / {@code sla_breach_notified} 从 1 写回 0。
+     * 清零只发生在 §9.6 的 reopen（D4-04 已实现）—— 若扫描会清零，
+     * 状态在 WARNING/NORMAL 之间抖动时就会反复轰炸通知。
+     *
+     * <h2>WHERE 条件只有 id + deleted</h2>
+     * 没有 {@code status} / {@code version}：扫描要处理的就是「当前这一批」工单，
+     * 不要求「我看到的状态到现在没变过」（见上）。{@code deleted = 0} 必须自己带 ——
+     * 手写 SQL 绕过了 MP 的 {@code @TableLogic}。
+     *
+     * @param id              工单 id
+     * @param responseState   响应线状态；由调用方保证非 {@code null}
+     *                        （DDL 里这两列是 {@code NOT NULL}，无 SLA 的工单沿用原值）
+     * @param resolutionState 解决线状态；同上
+     * @param warningNotified {@code true} → 置 {@code sla_warning_notified = 1}；
+     *                        {@code false} → <b>不写该列</b>（保持原值）
+     * @param breachNotified  {@code true} → 置 {@code sla_breach_notified = 1}；{@code false} → 不写
+     * @return 影响行数
+     */
+    int updateSlaScan(@Param("id") Long id,
+                      @Param("responseState") SlaState responseState,
+                      @Param("resolutionState") SlaState resolutionState,
+                      @Param("warningNotified") boolean warningNotified,
+                      @Param("breachNotified") boolean breachNotified);
 }
 

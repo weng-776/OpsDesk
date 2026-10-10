@@ -98,4 +98,31 @@
         <include refid="casWhere"/>
     </update>
 
+    <!--
+      SLA 定时扫描的结果回写（工单 D5-03，规格基线 §9.5）。
+
+      ⚠️ 这条 UPDATE **故意不 include casWhere** —— 它与状态流转是两种语义：
+        · 流转：改状态 + 乐观锁（status + version 双条件，0 行 = 40900）
+        · 扫描：只刷新派生数据（SLA 状态），**不改 status、不 bump version**
+          扫描若 bump version，每 5 分钟就会让所有未关闭工单的 version 前进，
+          用户此时提交的流转会莫名 CAS 失败 → 40900。
+          SLA 状态丢一次竞争无害（5 分钟后自然纠正），不值得引入冲突。
+
+      ⚠️ WHERE 只有 id + deleted：
+        手写 SQL 绕过了 MP 的 @TableLogic，deleted = 0 必须自己带。
+
+      ⚠️ 两个标志位用 <if> 条件追加列，所以**只置 1、绝不清 0**。
+        清零只发生在 §9.6 的 reopen（见 updateStatusCasExtended）。
+        若扫描会清零，状态在 WARNING/NORMAL 之间抖动时就会反复轰炸通知。
+    -->
+    <update id="updateSlaScan">
+        UPDATE ticket
+        SET sla_response_state = #{responseState},
+            sla_resolution_state = #{resolutionState}
+        <if test="warningNotified">, sla_warning_notified = 1</if>
+        <if test="breachNotified">, sla_breach_notified = 1</if>
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
 </mapper>
