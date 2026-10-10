@@ -63,4 +63,36 @@ public interface TicketFlowService {
      * @return 流转后的工单快照
      */
     TicketDetailVO transfer(Long ticketId, TicketAssignDTO dto);
+
+    /**
+     * 挂起工单（矩阵 #8）：{@code IN_PROGRESS → WAITING_USER}，<b>SLA 进入暂停</b>。
+     *
+     * <p>权限：{@code ticket:process}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>副作用（§9.4）：{@code sla_paused_at = now}。
+     *
+     * <p>幂等：已在 {@code WAITING_USER} 时再次 hold → {@code 40900}
+     * （状态机表里 {@code (WAITING_USER, HOLD)} 无登记，天然拒绝）。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO hold(Long ticketId);
+
+    /**
+     * 恢复工单（矩阵 #9）：{@code WAITING_USER → IN_PROGRESS}，<b>SLA 恢复并顺延</b>。
+     *
+     * <p>权限：{@code ticket:process}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>副作用（§9.4，逐字）：
+     * <pre>
+     * delta = now - sla_paused_at
+     * resolution_deadline += delta          ← 只顺延解决时限
+     * sla_paused_minutes  += delta（分钟）
+     * sla_paused_at = null
+     * </pre>
+     * ⚠️ {@code response_deadline} <b>不顺延</b>。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO resume(Long ticketId);
 }

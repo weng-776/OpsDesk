@@ -22,7 +22,7 @@ import java.util.Set;
  * <p>规格依据：规格基线 <b>§7.2 状态 × 角色 × 动作矩阵（权威）</b>、§7.3、§7.4、§6.2、§6.3；
  * API 文档 §8.12。
  *
- * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer。
+ * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer；D4-03 的 #8 hold / #9 resume。
  *
  * <h2>为什么是「判定表」而不是 if-else</h2>
  * §7.2 是一张 15 行的表。写成 if-else 链会有两个后果：
@@ -95,9 +95,9 @@ public class TicketStateMachine {
     }
 
     /**
-     * §7.2 矩阵登记表 —— 已登记 D4-01 的 #2 / #3 / #5 与 D4-02 的 #6。
+     * §7.2 矩阵登记表 —— 已登记 D4-01 的 #2 / #3 / #5、D4-02 的 #6、D4-03 的 #8 / #9。
      *
-     * <p>D4-03~05 会继续追加（hold / resume / resolve / close / reject / cancel / force-close），
+     * <p>D4-04~05 会继续追加（resolve / close / reject / cancel / force-close），
      * 以及矩阵 #13 的 {@code REOPENED --start--> IN_PROGRESS} ——
      * 因为索引 key 是 {@code (from, action)}，同一个 {@code start} 天然支持两个来源状态。
      */
@@ -116,7 +116,15 @@ public class TicketStateMachine {
             //    ⚠️ 前置条件 NONE：矩阵 #6 只约束角色（AGENT/ADMIN），
             //       没要求「必须是当前处理人」（与 #5 start 的区别就在这里）
             new Transition(TicketStatus.ASSIGNED, TicketHistoryAction.TRANSFER, TicketStatus.ASSIGNED,
-                    AGENT_OR_ADMIN, Precondition.NONE, false)
+                    AGENT_OR_ADMIN, Precondition.NONE, false),
+            // #8 IN_PROGRESS --hold--> WAITING_USER：仅 assignee / ADMIN，SLA 暂停（§9.4）
+            //    ⚠️ 「已在 WAITING_USER 再 hold 应 40900」不用写代码 ——
+            //       (WAITING_USER, HOLD) 无登记，查表必然落空
+            new Transition(TicketStatus.IN_PROGRESS, TicketHistoryAction.HOLD, TicketStatus.WAITING_USER,
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false),
+            // #9 WAITING_USER --resume--> IN_PROGRESS：仅 assignee / ADMIN，SLA 恢复并顺延（§9.4）
+            new Transition(TicketStatus.WAITING_USER, TicketHistoryAction.RESUME, TicketStatus.IN_PROGRESS,
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false)
     );
 
     /**

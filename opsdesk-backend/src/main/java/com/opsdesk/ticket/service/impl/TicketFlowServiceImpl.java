@@ -7,6 +7,7 @@ import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.TicketHistoryAction;
+import com.opsdesk.sla.service.SlaPauseService;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.mapper.TicketMapper;
@@ -29,9 +30,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 工单状态流转实现（工单 D4-01 / D4-02，SOP §5 红区：状态机）
+ * 工单状态流转实现（工单 D4-01 / D4-02 / D4-03，SOP §5 红区：状态机 + SLA）
  *
- * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5/#6、§7.3、§7.4、§6.2、§6.3、§9.3；API 文档 §8.12。
+ * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5/#6/#8/#9、§7.3、§7.4、§6.2、§6.3、§9.3、§9.4；
+ * API 文档 §8.12。
  *
  * <h2>每个流转方法的四步（§8.12 抬头的顺序，不能乱）</h2>
  * <pre>
@@ -66,6 +68,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
     private final UserService userService;
     private final UserRoleService userRoleService;
     private final RoleService roleService;
+    private final SlaPauseService slaPauseService;
 
     public TicketFlowServiceImpl(TicketService ticketService,
                                  TicketQueryService ticketQueryService,
@@ -75,7 +78,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                                  TicketDataScopeHelper dataScopeHelper,
                                  UserService userService,
                                  UserRoleService userRoleService,
-                                 RoleService roleService) {
+                                 RoleService roleService,
+                                 SlaPauseService slaPauseService) {
         this.ticketService = ticketService;
         this.ticketQueryService = ticketQueryService;
         this.ticketMapper = ticketMapper;
@@ -85,6 +89,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         this.userService = userService;
         this.userRoleService = userRoleService;
         this.roleService = roleService;
+        this.slaPauseService = slaPauseService;
     }
 
     // ==================== 矩阵 #2 assign ====================
@@ -153,23 +158,81 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         return ticketQueryService.detailForFlow(ticketId);
     }
 
+    // ==================== 矩阵 #8 hold / #9 resume（D4-03，§9.4）====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO hold(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.HOLD, user);
+        // §9.4「进入暂停状态：sla_paused_at = now」
+        apply(ticket, transition, user, null, "挂起（等待用户补充）",
+                SlaChange.pause(LocalDateTime.now()));
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO resume(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.RESUME, user);
+
+        // §9.4「退出暂停状态」—— 计算收口在 SlaPauseService（纯函数，可单测）
+        SlaPauseService.ResumeOutcome outcome = slaPauseService.resume(
+                ticket.getSlaPausedAt(),
+                ticket.getResolutionDeadline(),
+                ticket.getSlaPausedMinutes(),
+                LocalDateTime.now());
+
+        apply(ticket, transition, user, null, "恢复处理", SlaChange.resume(outcome));
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
     // ==================== 私有 ====================
 
     /**
-     * CAS 更新状态 + 写历史（同事务）。
+     * CAS 更新状态 + 写历史（同事务）—— 不涉及 SLA 的流转。
      *
      * @param newAssigneeId 新的处理人；{@code null} 表示不改该列
      */
     private void apply(Ticket ticket, TicketStateMachine.Transition transition,
                        UserContext.CurrentUser user, Long newAssigneeId, String remark) {
+        apply(ticket, transition, user, newAssigneeId, remark, null);
+    }
+
+    /**
+     * CAS 更新状态 + 写历史（同事务）。
+     *
+     * @param newAssigneeId 新的处理人；{@code null} 表示不改该列
+     * @param sla           本流转对 SLA 字段的改动；{@code null} 表示不碰 SLA
+     *                      （走 {@code updateStatusCas}，SQL 里根本没有 SLA 列）
+     */
+    private void apply(Ticket ticket, TicketStateMachine.Transition transition,
+                       UserContext.CurrentUser user, Long newAssigneeId, String remark,
+                       SlaChange sla) {
         LocalDateTime now = LocalDateTime.now();
 
         // 「写 first_response_at（若空）」：已经响应过就传 null → SQL 跳过该列 → 保留首轮值（§9.6）
         LocalDateTime firstResponseAt =
                 transition.stampsFirstResponse() && ticket.getFirstResponseAt() == null ? now : null;
 
-        int rows = ticketMapper.updateStatusCas(ticket.getId(), ticket.getStatus(), transition.to(),
-                ticket.getVersion(), newAssigneeId, firstResponseAt);
+        int rows;
+        if (sla == null) {
+            rows = ticketMapper.updateStatusCas(ticket.getId(), ticket.getStatus(), transition.to(),
+                    ticket.getVersion(), newAssigneeId, firstResponseAt);
+        }
+        else {
+            rows = ticketMapper.updateStatusCasWithSla(ticket.getId(), ticket.getStatus(), transition.to(),
+                    ticket.getVersion(), sla.pausedAt(), sla.clearPausedAt(),
+                    sla.resolutionDeadline(), sla.pausedMinutes());
+        }
+
         if (rows == 0) {
             // status 或 version 与读取时不一致 → 别人抢先改过（§25.4 用例 #2「两人同时 accept」）
             log.warn("[状态流转] CAS 失败：ticketId={} from={} expectedVersion={} action={}",
@@ -184,8 +247,30 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                 ticket.getId(), user.userId(), transition.action(),
                 transition.from(), transition.to());
 
-        // TODO(D6): 审计（AuditOperation.TICKET_ASSIGN 等）与通知（通知处理人 / 创建人）——
-        //   审计与通知都是 Day 6 的交付物，本单只留调用点（§8.12 的「写审计 / 发事件」两步）。
+        // TODO(D6): 审计（AuditOperation.TICKET_ASSIGN / TICKET_TRANSFER / TICKET_HOLD …）
+        //   与通知（通知处理人 / 创建人）—— 都是 Day 6 的交付物，本单只留调用点。
+    }
+
+    /**
+     * 一次流转对 SLA 字段的改动（私有载体，避免给 {@code apply} 加一堆位置参数）。
+     *
+     * @param pausedAt           写 {@code sla_paused_at}；{@code null} = 不写
+     * @param clearPausedAt      置 {@code sla_paused_at = NULL}（resume 用）
+     * @param resolutionDeadline 新的解决截止；{@code null} = 不写
+     * @param pausedMinutes      新的累计暂停分钟；{@code null} = 不写
+     */
+    private record SlaChange(LocalDateTime pausedAt, boolean clearPausedAt,
+                             LocalDateTime resolutionDeadline, Integer pausedMinutes) {
+
+        /** §9.4「进入暂停」：只写暂停起点 */
+        static SlaChange pause(LocalDateTime at) {
+            return new SlaChange(at, false, null, null);
+        }
+
+        /** §9.4「退出暂停」：清空起点 + 顺延解决时限 + 累加暂停分钟 */
+        static SlaChange resume(SlaPauseService.ResumeOutcome outcome) {
+            return new SlaChange(null, true, outcome.resolutionDeadline(), outcome.pausedMinutes());
+        }
     }
 
     /**

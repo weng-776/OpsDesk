@@ -22,13 +22,30 @@
 <mapper namespace="com.opsdesk.ticket.mapper.TicketMapper">
 
     <!--
-      状态流转 CAS 更新。
+      CAS 的 WHERE 条件 —— 抽成片段供所有状态流转共用。
+      条件四件套缺一不可：
+        id      定位行
+        status  保证「我看到的状态到现在没变过」
+        version 乐观锁
+        deleted 逻辑删除（绕过 MP 的 @TableLogic 手写 SQL 时必须自己带）
+      ⚠️ 抽片段是为了让 D4-04/05 新增流转时**不可能漏掉其中一条** ——
+         复制粘贴的 WHERE 迟早会漂移。
+    -->
+    <sql id="casWhere">
+        WHERE id = #{id}
+          AND status = #{from}
+          AND version = #{version}
+          AND deleted = 0
+    </sql>
+
+    <!--
+      状态流转 CAS 更新（工单 D4-01）。
 
       影响行数为 0 = CAS 失败（status 或 version 与期望不符），
       调用方 TicketFlowServiceImpl 据此抛 40900（§25.4 用例 #2「两人同时 accept」）。
 
       assignee_id / first_response_at 用 <if> 做「可选的列更新」：
-        · assign / accept 需要改 assignee_id；start 不需要（传 null → 跳过）
+        · assign / accept 需要改 assignee_id；start / transfer 不需要（传 null → 跳过）
         · first_response_at 只在「为空」时才由 Java 侧传值（§9.3 首次响应）；
           已响应过则传 null → 跳过 → 保留首轮值（§9.6「不重置」）
 
@@ -41,10 +58,30 @@
             version = version + 1
         <if test="assigneeId != null">, assignee_id = #{assigneeId}</if>
         <if test="firstResponseAt != null">, first_response_at = #{firstResponseAt}</if>
-        WHERE id = #{id}
-          AND status = #{from}
-          AND version = #{version}
-          AND deleted = 0
+        <include refid="casWhere"/>
+    </update>
+
+    <!--
+      带 SLA 字段的状态流转 CAS（工单 D4-03，规格基线 §9.4）。
+
+      · hold   ：只写 sla_paused_at = now
+      · resume ：清空 sla_paused_at（clearSlaPausedAt=true）+ 顺延 resolution_deadline
+                 + 累加 sla_paused_minutes
+
+      ⚠️ 这里**故意没有 response_deadline** —— §9.4 明确「响应时限不参与顺延」。
+         不写它，就不可能在改 SLA 时误伤它（结构性保证）。
+      ⚠️ clearSlaPausedAt 是必需的：<if test="x != null"> 表达不了「置 NULL」。
+      ⚠️ 用 <include refid="casWhere"/> 与上面的 updateStatusCas 共用同一份 CAS 条件。
+    -->
+    <update id="updateStatusCasWithSla">
+        UPDATE ticket
+        SET status = #{to},
+            version = version + 1
+        <if test="slaPausedAt != null">, sla_paused_at = #{slaPausedAt}</if>
+        <if test="clearSlaPausedAt">, sla_paused_at = NULL</if>
+        <if test="resolutionDeadline != null">, resolution_deadline = #{resolutionDeadline}</if>
+        <if test="slaPausedMinutes != null">, sla_paused_minutes = #{slaPausedMinutes}</if>
+        <include refid="casWhere"/>
     </update>
 
 </mapper>

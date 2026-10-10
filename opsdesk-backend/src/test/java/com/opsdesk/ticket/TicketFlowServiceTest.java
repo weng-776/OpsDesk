@@ -73,6 +73,10 @@ class TicketFlowServiceTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    /** 只用于在「裸 JDBC 改库」之后清 MyBatis 一级缓存，见 D4-03 的顺延用例 */
+    @Autowired
+    private org.mybatis.spring.SqlSessionTemplate sqlSessionTemplate;
+
     @AfterEach
     void tearDown() {
         UserContext.clear();
@@ -413,6 +417,132 @@ class TicketFlowServiceTest {
         int rows = ticketMapper.updateStatusCas(1L, TicketStatus.ASSIGNED, TicketStatus.ASSIGNED,
                 db.getVersion() - 1, AGENT_ZHANG, null);
         assertThat(rows).isZero();
+    }
+
+    // ==================== D4-03 挂起 / 恢复（矩阵 #8 / #9，§9.4）====================
+
+    @Test
+    @DisplayName("D4-03 验收1：IN_PROGRESS → WAITING_USER → IN_PROGRESS；sla_paused_at 进入有值、退出为 null")
+    void 挂起恢复流转与暂停起点() {
+        // 工单 2 是 IN_PROGRESS、assignee = agent_zhang(2)
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+
+        TicketDetailVO held = ticketFlowService.hold(2L);
+        assertThat(held.getStatus()).isEqualTo(TicketStatus.WAITING_USER);
+        // ⚠️ sla_paused_at 是 SLA 内部字段，VO 刻意不暴露（§16.8 不含它）→ 断言走实体
+        assertThat(ticketService.getById(2L).getSlaPausedAt())
+                .as("§9.4 进入暂停：sla_paused_at = now").isNotNull();
+
+        TicketDetailVO resumed = ticketFlowService.resume(2L);
+        assertThat(resumed.getStatus()).isEqualTo(TicketStatus.IN_PROGRESS);
+
+        // 落库校验
+        Ticket db = ticketService.getById(2L);
+        assertThat(db.getStatus()).isEqualTo(TicketStatus.IN_PROGRESS);
+        assertThat(db.getSlaPausedAt()).as("§9.4 退出暂停：sla_paused_at = null").isNull();
+        assertThat(db.getSlaPausedMinutes()).as("累计暂停分钟字段非空").isNotNull();
+    }
+
+    @Test
+    @DisplayName("D4-03 验收2：恢复后 resolution_deadline 顺延了暂停时长（构造暂停 2 分钟）")
+    void 恢复后解决时限顺延暂停时长() {
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        ticketFlowService.hold(2L);
+
+        Ticket before = ticketService.getById(2L);
+        LocalDateTime deadlineBefore = before.getResolutionDeadline();
+        assertThat(deadlineBefore).as("工单 2 种子数据应有 SLA 解决时限").isNotNull();
+
+        // 不可能真等 2 分钟 —— 把暂停起点回拨 2 分钟，等价于「已经暂停了 2 分钟」
+        // ⚠️ 必须 truncatedTo(SECONDS)：sla_paused_at 是 DATETIME(0)，
+        //    MySQL 会把小数秒**四舍五入**。若 now 的小数部分 ≥0.5s，回拨值会被进位成晚 1 秒，
+        //    于是 delta ≈ 119.5s → Duration.toMinutes() 截断成 1，分钟断言就会偶发失败
+        //    （deadline 顺延 119s 仍在容差内，所以只有分钟那条会红 —— 真踩过）。
+        LocalDateTime pausedAt = LocalDateTime.now().minusMinutes(2)
+                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        jdbcTemplate.update("UPDATE ticket SET sla_paused_at = ? WHERE id = 2",
+                java.sql.Timestamp.valueOf(pausedAt));
+        // ⚠️ 必须清 MyBatis 一级缓存：jdbcTemplate 的裸 SQL 不走 MyBatis，
+        //    不会触发 SqlSession 的缓存失效 → resume() 里的 getById 会拿到**回拨前**的旧实体，
+        //    于是 delta 只算了 ~1 秒（这条踩过：known-traps「MyBatis 一级缓存」）
+        sqlSessionTemplate.clearCache();
+
+        TicketDetailVO resumed = ticketFlowService.resume(2L);
+
+        LocalDateTime deadlineAfter = resumed.getResolutionDeadline();
+        long shiftedSeconds = java.time.Duration.between(deadlineBefore, deadlineAfter).getSeconds();
+        assertThat(shiftedSeconds)
+                .as("§9.4：resolution_deadline 应后移约 120 秒（实际 %d 秒）", shiftedSeconds)
+                .isBetween(115L, 130L);
+
+        Ticket after = ticketService.getById(2L);
+        assertThat(after.getSlaPausedMinutes())
+                .as("§9.4：累计暂停分钟 += 2").isEqualTo(before.getSlaPausedMinutes() + 2);
+    }
+
+    @Test
+    @DisplayName("D4-03 验收3：response_deadline 没有被改动；非 assignee 调用 → 40301")
+    void 挂起恢复不动响应时限且限处理人() {
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        LocalDateTime responseDeadlineBefore = ticketService.getById(2L).getResponseDeadline();
+        assertThat(responseDeadlineBefore).isNotNull();
+
+        ticketFlowService.hold(2L);
+        ticketFlowService.resume(2L);
+
+        assertThat(ticketService.getById(2L).getResponseDeadline())
+                .as("⚠️ §9.4：response_deadline 不参与顺延，一个字都不能变")
+                .isEqualTo(responseDeadlineBefore);
+
+        // 非 assignee：把工单 2 的部门改成 agent_zhang 的部门，让 agent_li 也能看见它
+        // （否则他会先撞数据范围 40301，测不出「可见但不是处理人」这条前置条件）
+        Long zhangDept = jdbcTemplate.queryForObject(
+                "SELECT department_id FROM `user` WHERE id = ?", Long.class, AGENT_ZHANG);
+        jdbcTemplate.update("UPDATE ticket SET department_id = ? WHERE id = 2", zhangDept);
+
+        setCurrentUser(AGENT_LI, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.hold(2L)))
+                .as("可见但不是当前处理人 → 40301（前置条件）").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+        assertThat(catchBiz(() -> ticketFlowService.resume(2L)))
+                .isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
+    }
+
+    @Test
+    @DisplayName("D4-03 幂等：已在 WAITING_USER 再 hold → 40900；IN_PROGRESS 直接 resume → 40900")
+    void 挂起恢复的状态前置() {
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+
+        // IN_PROGRESS 直接 resume → 状态机表里没有 (IN_PROGRESS, RESUME)
+        assertThat(catchBiz(() -> ticketFlowService.resume(2L)))
+                .as("IN_PROGRESS 不能 resume").isEqualTo(ErrorCode.CONFLICT);
+
+        ticketFlowService.hold(2L);
+        // 已在 WAITING_USER 再 hold → 表里没有 (WAITING_USER, HOLD)
+        assertThat(catchBiz(() -> ticketFlowService.hold(2L)))
+                .as("已在 WAITING_USER 再 hold → 40900").isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("D4-03 补充：写 action=HOLD / RESUME 的历史")
+    void 挂起恢复写历史() {
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        ticketFlowService.hold(2L);
+        ticketFlowService.resume(2L);
+
+        List<java.util.Map<String, Object>> holdRows = jdbcTemplate.queryForList(
+                "SELECT operator_id, from_status, to_status FROM ticket_history "
+                        + "WHERE ticket_id = 2 AND action = 'HOLD'");
+        assertThat(holdRows).hasSize(1);
+        assertThat(((Number) holdRows.get(0).get("operator_id")).longValue()).isEqualTo(AGENT_ZHANG);
+        assertThat(holdRows.get(0).get("from_status")).isEqualTo("IN_PROGRESS");
+        assertThat(holdRows.get(0).get("to_status")).isEqualTo("WAITING_USER");
+
+        List<java.util.Map<String, Object>> resumeRows = jdbcTemplate.queryForList(
+                "SELECT operator_id, from_status, to_status FROM ticket_history "
+                        + "WHERE ticket_id = 2 AND action = 'RESUME'");
+        assertThat(resumeRows).hasSize(1);
+        assertThat(resumeRows.get(0).get("from_status")).isEqualTo("WAITING_USER");
+        assertThat(resumeRows.get(0).get("to_status")).isEqualTo("IN_PROGRESS");
     }
 
     // ==================== 工具 ====================

@@ -153,7 +153,7 @@ public class TicketController {
         return Result.ok(ticketCommentBizService.add(id, dto));
     }
 
-    // ==================== 状态流转（D4-01 / D4-02，§8.12 / 规格基线 §7.2） ====================
+    // ==================== 状态流转（D4-01 / D4-02 / D4-03，§8.12 / 规格基线 §7.2） ====================
 
     /**
      * 分派工单（§8.12 #1，矩阵 #2）：{@code OPEN → ASSIGNED}。
@@ -210,6 +210,32 @@ public class TicketController {
     public Result<TicketDetailVO> transfer(@PathVariable Long id,
                                            @Valid @RequestBody TicketAssignDTO dto) {
         return Result.ok(ticketFlowService.transfer(id, dto));
+    }
+
+    /**
+     * 挂起工单（§8.12 #5，矩阵 #8）：{@code IN_PROGRESS → WAITING_USER}，SLA 进入暂停。
+     *
+     * <p>权限 {@code ticket:process}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>幂等：已在 {@code WAITING_USER} 再 hold → {@code 40900}（状态机表里无该入边）。
+     */
+    @RequirePermission(PermissionCodes.TICKET_PROCESS)
+    @PostMapping("/{id}/hold")
+    public Result<TicketDetailVO> hold(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.hold(id));
+    }
+
+    /**
+     * 恢复工单（§8.12 #6，矩阵 #9）：{@code WAITING_USER → IN_PROGRESS}，SLA 恢复并顺延（§9.4）。
+     *
+     * <p>权限 {@code ticket:process}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>⚠️ 只顺延 {@code resolution_deadline}；{@code response_deadline} 不动。
+     */
+    @RequirePermission(PermissionCodes.TICKET_PROCESS)
+    @PostMapping("/{id}/resume")
+    public Result<TicketDetailVO> resume(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.resume(id));
     }
 
     // ==================== 附件（D3-05，§8.9 / §8.10） ====================
