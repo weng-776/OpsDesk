@@ -17,10 +17,12 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * 工单状态机（工单 D4-01，SOP §5 红区：状态机是整个项目最核心的红区）
+ * 工单状态机（工单 D4-01 起，SOP §5 红区：状态机是整个项目最核心的红区）
  *
  * <p>规格依据：规格基线 <b>§7.2 状态 × 角色 × 动作矩阵（权威）</b>、§7.3、§7.4、§6.2、§6.3；
  * API 文档 §8.12。
+ *
+ * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer。
  *
  * <h2>为什么是「判定表」而不是 if-else</h2>
  * §7.2 是一张 15 行的表。写成 if-else 链会有两个后果：
@@ -93,9 +95,9 @@ public class TicketStateMachine {
     }
 
     /**
-     * §7.2 矩阵登记表 —— <b>本单只登记 D4-01 负责的 #2 / #3 / #5</b>。
+     * §7.2 矩阵登记表 —— 已登记 D4-01 的 #2 / #3 / #5 与 D4-02 的 #6。
      *
-     * <p>D4-02~05 会往这里追加行（transfer / hold / resume / resolve / close / reject / cancel / force-close），
+     * <p>D4-03~05 会继续追加（hold / resume / resolve / close / reject / cancel / force-close），
      * 以及矩阵 #13 的 {@code REOPENED --start--> IN_PROGRESS} ——
      * 因为索引 key 是 {@code (from, action)}，同一个 {@code start} 天然支持两个来源状态。
      */
@@ -108,7 +110,13 @@ public class TicketStateMachine {
                     AGENT_OR_ADMIN, Precondition.NONE, true),
             // #5 ASSIGNED --start--> IN_PROGRESS：仅 assignee / ADMIN
             new Transition(TicketStatus.ASSIGNED, TicketHistoryAction.START, TicketStatus.IN_PROGRESS,
-                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, true)
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, true),
+            // #6 ASSIGNED --transfer--> ASSIGNED：只换处理人，状态不变
+            //    ⚠️ stampsFirstResponse = false —— 已经响应过了，转派不得重置 first_response_at
+            //    ⚠️ 前置条件 NONE：矩阵 #6 只约束角色（AGENT/ADMIN），
+            //       没要求「必须是当前处理人」（与 #5 start 的区别就在这里）
+            new Transition(TicketStatus.ASSIGNED, TicketHistoryAction.TRANSFER, TicketStatus.ASSIGNED,
+                    AGENT_OR_ADMIN, Precondition.NONE, false)
     );
 
     /**

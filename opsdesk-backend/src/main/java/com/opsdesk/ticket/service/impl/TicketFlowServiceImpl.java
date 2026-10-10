@@ -29,9 +29,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 工单状态流转实现（工单 D4-01，SOP §5 红区：状态机）
+ * 工单状态流转实现（工单 D4-01 / D4-02，SOP §5 红区：状态机）
  *
- * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5、§7.3、§7.4、§6.2、§6.3、§9.3；API 文档 §8.12。
+ * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5/#6、§7.3、§7.4、§6.2、§6.3、§9.3；API 文档 §8.12。
  *
  * <h2>每个流转方法的四步（§8.12 抬头的顺序，不能乱）</h2>
  * <pre>
@@ -131,6 +131,25 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                 stateMachine.check(ticket, TicketHistoryAction.START, user);
         // 不改 assignee：矩阵 #5 只流转状态（矩阵 #13 REOPENED→IN_PROGRESS 同样沿用原 assignee）
         apply(ticket, transition, user, null, "开始处理");
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    // ==================== 矩阵 #6 transfer ====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO transfer(Long ticketId, TicketAssignDTO dto) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        // 新处理人同样必须是「启用的 AGENT / ADMIN」（与 assign 同一把尺子）
+        User assignee = requireAssignable(dto.getAssigneeId());
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.TRANSFER, user);
+        // 矩阵 #6：只换 assignee_id，状态仍是 ASSIGNED。
+        // ⚠️ stampsFirstResponse = false → apply() 传 null → SQL 跳过该列 → 保留首轮响应时间
+        apply(ticket, transition, user, assignee.getId(), "转派给 " + displayNameOf(assignee));
         return ticketQueryService.detailForFlow(ticketId);
     }
 

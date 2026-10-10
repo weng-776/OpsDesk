@@ -153,7 +153,7 @@ public class TicketController {
         return Result.ok(ticketCommentBizService.add(id, dto));
     }
 
-    // ==================== 状态流转（D4-01，§8.12 / 规格基线 §7.2） ====================
+    // ==================== 状态流转（D4-01 / D4-02，§8.12 / 规格基线 §7.2） ====================
 
     /**
      * 分派工单（§8.12 #1，矩阵 #2）：{@code OPEN → ASSIGNED}。
@@ -195,6 +195,21 @@ public class TicketController {
     @PostMapping("/{id}/start")
     public Result<TicketDetailVO> start(@PathVariable Long id) {
         return Result.ok(ticketFlowService.start(id));
+    }
+
+    /**
+     * 转派工单（§8.12 #2，矩阵 #6）：{@code ASSIGNED → ASSIGNED}，只换处理人。
+     *
+     * <p>权限 {@code ticket:transfer}；角色 AGENT / ADMIN。
+     * 请求体 {@code { "assigneeId": 3 }}（与 assign 同构，复用 {@link TicketAssignDTO}）。
+     *
+     * <p>⚠️ {@code first_response_at} 保持不变（已响应过，不重置）。
+     */
+    @RequirePermission(PermissionCodes.TICKET_TRANSFER)
+    @PostMapping("/{id}/transfer")
+    public Result<TicketDetailVO> transfer(@PathVariable Long id,
+                                           @Valid @RequestBody TicketAssignDTO dto) {
+        return Result.ok(ticketFlowService.transfer(id, dto));
     }
 
     // ==================== 附件（D3-05，§8.9 / §8.10） ====================

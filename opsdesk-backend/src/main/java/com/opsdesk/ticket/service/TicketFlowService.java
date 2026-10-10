@@ -49,4 +49,18 @@ public interface TicketFlowService {
      * @return 流转后的工单快照
      */
     TicketDetailVO start(Long ticketId);
+
+    /**
+     * 转派工单（矩阵 #6）：{@code ASSIGNED → ASSIGNED}，只换处理人，<b>状态不变</b>。
+     *
+     * <p>权限：{@code ticket:transfer}；角色 AGENT / ADMIN（矩阵 #6 不要求「必须是当前处理人」）。
+     *
+     * <p>⚠️ {@code first_response_at} <b>保持不变</b> —— 工单已经响应过了，转派不重置响应时点
+     * （§6.2 转派语义同分派，但用于已分派工单更换处理人；响应已发生，不该退回未响应）。
+     *
+     * @param ticketId 工单 id
+     * @param dto      含 {@code assigneeId}；新处理人必须是启用的 AGENT / ADMIN
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO transfer(Long ticketId, TicketAssignDTO dto);
 }

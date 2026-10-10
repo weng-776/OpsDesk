@@ -325,6 +325,96 @@ class TicketFlowServiceTest {
                 .as("普通查询接口仍然严格按数据范围拒绝").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
     }
 
+    // ==================== D4-02 转派（矩阵 #6） ====================
+
+    @Test
+    @DisplayName("D4-02 验收1：转派后 assignee 变更、status 仍 ASSIGNED、first_response_at 未被重置")
+    void 转派只换处理人() {
+        // 先用 ADMIN 把工单 1 分派给 agent_zhang（顺带写入 first_response_at）
+        setCurrentUser(ADMIN, Role.ADMIN);
+        TicketDetailVO assigned = ticketFlowService.assign(1L, assignDto(AGENT_ZHANG));
+        LocalDateTime firstResponse = assigned.getFirstResponseAt();
+        assertThat(firstResponse).as("分派时已写入响应时点").isNotNull();
+
+        // agent_zhang 转派给 agent_li
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        TicketDetailVO after = ticketFlowService.transfer(1L, assignDto(AGENT_LI));
+
+        assertThat(after.getStatus()).as("矩阵 #6：状态不变，仍为 ASSIGNED").isEqualTo(TicketStatus.ASSIGNED);
+        assertThat(after.getAssigneeId()).as("处理人已更换").isEqualTo(AGENT_LI);
+        assertThat(after.getFirstResponseAt())
+                .as("⚠️ 已响应过 → 转派不得重置 first_response_at")
+                .isEqualTo(firstResponse);
+
+        // 落库校验
+        Ticket db = ticketService.getById(1L);
+        assertThat(db.getStatus()).isEqualTo(TicketStatus.ASSIGNED);
+        assertThat(db.getAssigneeId()).isEqualTo(AGENT_LI);
+        assertThat(db.getFirstResponseAt()).isEqualTo(firstResponse);
+    }
+
+    @Test
+    @DisplayName("D4-02 验收2：EMPLOYEE 调 transfer → 40300（矩阵 #6 只允许 AGENT/ADMIN）")
+    void 转派员工角色被拒() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+        ticketFlowService.assign(1L, assignDto(AGENT_ZHANG));
+
+        // emp_wang 是工单 1 的创建人（可见），但角色不满足矩阵 #6
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        assertThat(catchBiz(() -> ticketFlowService.transfer(1L, assignDto(AGENT_LI))))
+                .isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    @DisplayName("D4-02 验收3：OPEN / IN_PROGRESS 状态调 transfer → 40900")
+    void 非assigned状态不能转派() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+        // 工单 1 是 OPEN —— 矩阵 #6 只登记了 ASSIGNED 一个来源
+        assertThat(catchBiz(() -> ticketFlowService.transfer(1L, assignDto(AGENT_LI))))
+                .isEqualTo(ErrorCode.CONFLICT);
+        // 工单 2 是 IN_PROGRESS
+        assertThat(catchBiz(() -> ticketFlowService.transfer(2L, assignDto(AGENT_LI))))
+                .isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("D4-02 补充：新处理人必须是启用的 AGENT/ADMIN；并写 action=TRANSFER 的历史")
+    void 转派校验与历史() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+        ticketFlowService.assign(1L, assignDto(AGENT_ZHANG));
+
+        assertThat(catchBiz(() -> ticketFlowService.transfer(1L, assignDto(EMP_WANG))))
+                .as("转派给 EMPLOYEE → 40001").isEqualTo(ErrorCode.PARAM_INVALID);
+        assertThat(catchBiz(() -> ticketFlowService.transfer(1L, assignDto(999_999L))))
+                .as("转派给不存在的用户 → 40400").isEqualTo(ErrorCode.NOT_FOUND);
+
+        // 正常转派 → 写 TRANSFER 历史（状态不变，from == to）
+        ticketFlowService.transfer(1L, assignDto(AGENT_LI));
+        List<java.util.Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT operator_id, from_status, to_status FROM ticket_history "
+                        + "WHERE ticket_id = 1 AND action = 'TRANSFER'");
+        assertThat(rows).hasSize(1);
+        assertThat(((Number) rows.get(0).get("operator_id")).longValue()).isEqualTo(ADMIN);
+        assertThat(rows.get(0).get("from_status")).as("矩阵 #6 是 ASSIGNED → ASSIGNED").isEqualTo("ASSIGNED");
+        assertThat(rows.get(0).get("to_status")).isEqualTo("ASSIGNED");
+    }
+
+    @Test
+    @DisplayName("D4-02 补充：转派同样走 CAS（version 递增，陈旧版本 → 0 行）")
+    void 转派走CAS() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+        ticketFlowService.assign(1L, assignDto(AGENT_ZHANG));   // version 0 → 1
+        ticketFlowService.transfer(1L, assignDto(AGENT_LI));    // version 1 → 2
+
+        Ticket db = ticketService.getById(1L);
+        assertThat(db.getVersion()).as("两次流转 → version = 2").isEqualTo(2);
+
+        // 拿陈旧版本再转派一次 → 影响 0 行（乐观锁）
+        int rows = ticketMapper.updateStatusCas(1L, TicketStatus.ASSIGNED, TicketStatus.ASSIGNED,
+                db.getVersion() - 1, AGENT_ZHANG, null);
+        assertThat(rows).isZero();
+    }
+
     // ==================== 工具 ====================
 
     private TicketAssignDTO assignDto(Long assigneeId) {
