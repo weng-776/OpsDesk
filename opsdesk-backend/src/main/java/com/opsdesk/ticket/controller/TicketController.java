@@ -153,7 +153,7 @@ public class TicketController {
         return Result.ok(ticketCommentBizService.add(id, dto));
     }
 
-    // ==================== 状态流转（D4-01 / D4-02 / D4-03，§8.12 / 规格基线 §7.2） ====================
+    // ==================== 状态流转（D4-01 ~ D4-04，§8.12 / 规格基线 §7.2） ====================
 
     /**
      * 分派工单（§8.12 #1，矩阵 #2）：{@code OPEN → ASSIGNED}。
@@ -236,6 +236,43 @@ public class TicketController {
     @PostMapping("/{id}/resume")
     public Result<TicketDetailVO> resume(@PathVariable Long id) {
         return Result.ok(ticketFlowService.resume(id));
+    }
+
+    /**
+     * 标记解决（§8.12 #7，矩阵 #10）：{@code IN_PROGRESS → WAITING_CONFIRM}，SLA 进入暂停。
+     *
+     * <p>权限 {@code ticket:resolve}；仅当前 assignee 或 ADMIN。无请求体。
+     */
+    @RequirePermission(PermissionCodes.TICKET_RESOLVE)
+    @PostMapping("/{id}/resolve")
+    public Result<TicketDetailVO> resolve(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.resolve(id));
+    }
+
+    /**
+     * 关闭工单（§8.12 #8，矩阵 #11）：{@code WAITING_CONFIRM → CLOSED}，SLA 恢复。
+     *
+     * <p>权限 {@code ticket:close}；<b>创建人或 ADMIN</b>（EMPLOYEE 也持有该权限码，
+     * 但仅限自己创建的工单 —— 这层由状态机的 {@code CREATOR_OR_ADMIN} 前置条件保证）。无请求体。
+     */
+    @RequirePermission(PermissionCodes.TICKET_CLOSE)
+    @PostMapping("/{id}/close")
+    public Result<TicketDetailVO> close(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.close(id));
+    }
+
+    /**
+     * 驳回（§8.12 #9，矩阵 #12）：{@code WAITING_CONFIRM → REOPENED}，按 §9.6 重算 SLA。
+     *
+     * <p>权限 {@code ticket:reopen}；<b>仅创建人</b>。无请求体。
+     *
+     * <p>⚠️ §7.3：{@code REOPENED} 是<b>持久状态</b> —— 本接口只走到 {@code REOPENED}，
+     * 要回到 {@code IN_PROGRESS} 必须由处理人再调一次 {@code POST /{id}/start}。
+     */
+    @RequirePermission(PermissionCodes.TICKET_REOPEN)
+    @PostMapping("/{id}/reject")
+    public Result<TicketDetailVO> reject(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.reject(id));
     }
 
     // ==================== 附件（D3-05，§8.9 / §8.10） ====================

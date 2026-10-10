@@ -6,8 +6,10 @@ import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
 import com.opsdesk.common.enums.Role;
+import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.sla.service.SlaPauseService;
+import com.opsdesk.sla.service.TicketSlaCalculator;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.mapper.TicketMapper;
@@ -15,6 +17,7 @@ import com.opsdesk.ticket.service.TicketFlowService;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
 import com.opsdesk.ticket.statemachine.TicketStateMachine;
+import com.opsdesk.ticket.statemachine.TicketStatePatch;
 import com.opsdesk.ticket.support.TicketHistoryRecorder;
 import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.user.entity.User;
@@ -30,10 +33,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 工单状态流转实现（工单 D4-01 / D4-02 / D4-03，SOP §5 红区：状态机 + SLA）
+ * 工单状态流转实现（工单 D4-01 ~ D4-04，SOP §5 红区：状态机 + SLA）
  *
- * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5/#6/#8/#9、§7.3、§7.4、§6.2、§6.3、§9.3、§9.4；
- * API 文档 §8.12。
+ * <p>规格依据：规格基线 §7.2 矩阵 #2/#3/#5/#6/#8/#9/#10/#11/#12/#13、§7.3、§7.4、
+ * §6.2、§6.3、§6.4、§9.3、§9.4、§9.6；API 文档 §8.12。
  *
  * <h2>每个流转方法的四步（§8.12 抬头的顺序，不能乱）</h2>
  * <pre>
@@ -69,6 +72,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
     private final UserRoleService userRoleService;
     private final RoleService roleService;
     private final SlaPauseService slaPauseService;
+    private final TicketSlaCalculator ticketSlaCalculator;
 
     public TicketFlowServiceImpl(TicketService ticketService,
                                  TicketQueryService ticketQueryService,
@@ -79,7 +83,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                                  UserService userService,
                                  UserRoleService userRoleService,
                                  RoleService roleService,
-                                 SlaPauseService slaPauseService) {
+                                 SlaPauseService slaPauseService,
+                                 TicketSlaCalculator ticketSlaCalculator) {
         this.ticketService = ticketService;
         this.ticketQueryService = ticketQueryService;
         this.ticketMapper = ticketMapper;
@@ -90,6 +95,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         this.userRoleService = userRoleService;
         this.roleService = roleService;
         this.slaPauseService = slaPauseService;
+        this.ticketSlaCalculator = ticketSlaCalculator;
     }
 
     // ==================== 矩阵 #2 assign ====================
@@ -169,8 +175,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         TicketStateMachine.Transition transition =
                 stateMachine.check(ticket, TicketHistoryAction.HOLD, user);
         // §9.4「进入暂停状态：sla_paused_at = now」
-        apply(ticket, transition, user, null, "挂起（等待用户补充）",
-                SlaChange.pause(LocalDateTime.now()));
+        apply(ticket, transition, user, "挂起（等待用户补充）",
+                TicketStatePatch.builder().slaPausedAt(LocalDateTime.now()).build());
         return ticketQueryService.detailForFlow(ticketId);
     }
 
@@ -190,49 +196,133 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                 ticket.getSlaPausedMinutes(),
                 LocalDateTime.now());
 
-        apply(ticket, transition, user, null, "恢复处理", SlaChange.resume(outcome));
+        apply(ticket, transition, user, "恢复处理", resumePatch(outcome));
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    // ==================== 矩阵 #10 resolve / #11 close / #12 reject（D4-04）====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO resolve(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.RESOLVE, user);
+
+        // 矩阵 #10：写 resolved_at，且 SLA **进入暂停**（§9.4：WAITING_CONFIRM 是暂停态）
+        LocalDateTime now = LocalDateTime.now();
+        apply(ticket, transition, user, "标记解决",
+                TicketStatePatch.builder().slaPausedAt(now).resolvedAt(now).build());
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO close(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.CLOSE, user);
+
+        // 矩阵 #11：写 closed_at，SLA **恢复**（退出 WAITING_CONFIRM 的暂停，顺延逻辑同 resume，§9.4）
+        SlaPauseService.ResumeOutcome outcome = slaPauseService.resume(
+                ticket.getSlaPausedAt(),
+                ticket.getResolutionDeadline(),
+                ticket.getSlaPausedMinutes(),
+                LocalDateTime.now());
+
+        TicketStatePatch patch = resumePatch(outcome).toBuilder()
+                .closedAt(LocalDateTime.now())
+                .build();
+        apply(ticket, transition, user, "确认关闭", patch);
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO reject(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.REJECT, user);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        // §9.6 ①：新一轮解决时限 = reopen 时间 + resolution_minutes（**整轮重算，不是累加**）
+        //   取 ticket.sla_policy_id 冻结的那一版策略（§9.1/§9.7）
+        LocalDateTime newDeadline =
+                ticketSlaCalculator.reopenResolutionDeadline(ticket.getSlaPolicyId(), now);
+        if (newDeadline == null) {
+            // 取不到策略 → 保持原 deadline 不动（宁可不动，也不要写坏）
+            log.warn("[工单驳回] 取不到 SLA 策略，resolution_deadline 保持不变。ticketId={}", ticketId);
+            newDeadline = ticket.getResolutionDeadline();
+        }
+
+        // §9.4：REOPENED 不是暂停态 → 必须退出暂停（清空起点），并累加本次暂停时长
+        //   （不清空会让「暂停」一直开着，之后任何 resume 会算出巨大的 delta）
+        SlaPauseService.ResumeOutcome pauseOutcome = slaPauseService.resume(
+                ticket.getSlaPausedAt(),
+                ticket.getResolutionDeadline(),
+                ticket.getSlaPausedMinutes(),
+                now);
+
+        TicketStatePatch patch = TicketStatePatch.builder()
+                .clearSlaPausedAt(true)
+                .slaPausedMinutes(pauseOutcome.pausedMinutes())
+                .resolutionDeadline(newDeadline)
+                // §9.6 ②：重置 SLA 状态与超时标志位（新一轮从零开始）
+                .slaResolutionState(SlaState.NORMAL)
+                .slaWarningNotified(0)
+                .slaBreachNotified(0)
+                // §9.6 ③：重新打开次数 +1
+                .reopenCount((ticket.getReopenCount() == null ? 0 : ticket.getReopenCount()) + 1)
+                .build();
+        // ⚠️ §7.3：只走到 REOPENED 为止，**绝不**顺手推到 IN_PROGRESS
+        //    （要进 IN_PROGRESS 必须由处理人再调一次 start，矩阵 #13）
+        apply(ticket, transition, user, "驳回（未解决）", patch);
         return ticketQueryService.detailForFlow(ticketId);
     }
 
     // ==================== 私有 ====================
 
     /**
-     * CAS 更新状态 + 写历史（同事务）—— 不涉及 SLA 的流转。
+     * CAS 更新状态 + 写历史（同事务）—— <b>简单路径</b>：只改 assignee / first_response_at。
      *
      * @param newAssigneeId 新的处理人；{@code null} 表示不改该列
      */
     private void apply(Ticket ticket, TicketStateMachine.Transition transition,
                        UserContext.CurrentUser user, Long newAssigneeId, String remark) {
-        apply(ticket, transition, user, newAssigneeId, remark, null);
-    }
-
-    /**
-     * CAS 更新状态 + 写历史（同事务）。
-     *
-     * @param newAssigneeId 新的处理人；{@code null} 表示不改该列
-     * @param sla           本流转对 SLA 字段的改动；{@code null} 表示不碰 SLA
-     *                      （走 {@code updateStatusCas}，SQL 里根本没有 SLA 列）
-     */
-    private void apply(Ticket ticket, TicketStateMachine.Transition transition,
-                       UserContext.CurrentUser user, Long newAssigneeId, String remark,
-                       SlaChange sla) {
         LocalDateTime now = LocalDateTime.now();
 
         // 「写 first_response_at（若空）」：已经响应过就传 null → SQL 跳过该列 → 保留首轮值（§9.6）
         LocalDateTime firstResponseAt =
                 transition.stampsFirstResponse() && ticket.getFirstResponseAt() == null ? now : null;
 
-        int rows;
-        if (sla == null) {
-            rows = ticketMapper.updateStatusCas(ticket.getId(), ticket.getStatus(), transition.to(),
-                    ticket.getVersion(), newAssigneeId, firstResponseAt);
-        }
-        else {
-            rows = ticketMapper.updateStatusCasWithSla(ticket.getId(), ticket.getStatus(), transition.to(),
-                    ticket.getVersion(), sla.pausedAt(), sla.clearPausedAt(),
-                    sla.resolutionDeadline(), sla.pausedMinutes());
-        }
+        int rows = ticketMapper.updateStatusCas(ticket.getId(), ticket.getStatus(), transition.to(),
+                ticket.getVersion(), newAssigneeId, firstResponseAt);
+        afterCas(ticket, transition, user, remark, rows);
+    }
 
+    /**
+     * CAS 更新状态 + 写历史（同事务）—— <b>扩展路径</b>：要写 SLA / 生命周期附加列。
+     *
+     * <p>走 {@code updateStatusCasExtended} + {@link TicketStatePatch}；
+     * 两条路径共用同一份 CAS 条件（XML 的 {@code casWhere} 片段），并发语义完全一致。
+     */
+    private void apply(Ticket ticket, TicketStateMachine.Transition transition,
+                       UserContext.CurrentUser user, String remark, TicketStatePatch patch) {
+        int rows = ticketMapper.updateStatusCasExtended(ticket.getId(), ticket.getStatus(),
+                transition.to(), ticket.getVersion(), patch);
+        afterCas(ticket, transition, user, remark, rows);
+    }
+
+    /** CAS 之后：影响 0 行 = 并发冲突；否则写历史。两条路径共用 */
+    private void afterCas(Ticket ticket, TicketStateMachine.Transition transition,
+                          UserContext.CurrentUser user, String remark, int rows) {
         if (rows == 0) {
             // status 或 version 与读取时不一致 → 别人抢先改过（§25.4 用例 #2「两人同时 accept」）
             log.warn("[状态流转] CAS 失败：ticketId={} from={} expectedVersion={} action={}",
@@ -247,30 +337,18 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                 ticket.getId(), user.userId(), transition.action(),
                 transition.from(), transition.to());
 
-        // TODO(D6): 审计（AuditOperation.TICKET_ASSIGN / TICKET_TRANSFER / TICKET_HOLD …）
+        // TODO(D6): 审计（AuditOperation.TICKET_CLOSE / TICKET_TRANSFER / TICKET_HOLD …，
+        //   注意枚举里目前只有 TICKET_ASSIGN/TRANSFER/CLOSE，RESOLVE/REJECT/HOLD/RESUME 待补）
         //   与通知（通知处理人 / 创建人）—— 都是 Day 6 的交付物，本单只留调用点。
     }
 
-    /**
-     * 一次流转对 SLA 字段的改动（私有载体，避免给 {@code apply} 加一堆位置参数）。
-     *
-     * @param pausedAt           写 {@code sla_paused_at}；{@code null} = 不写
-     * @param clearPausedAt      置 {@code sla_paused_at = NULL}（resume 用）
-     * @param resolutionDeadline 新的解决截止；{@code null} = 不写
-     * @param pausedMinutes      新的累计暂停分钟；{@code null} = 不写
-     */
-    private record SlaChange(LocalDateTime pausedAt, boolean clearPausedAt,
-                             LocalDateTime resolutionDeadline, Integer pausedMinutes) {
-
-        /** §9.4「进入暂停」：只写暂停起点 */
-        static SlaChange pause(LocalDateTime at) {
-            return new SlaChange(at, false, null, null);
-        }
-
-        /** §9.4「退出暂停」：清空起点 + 顺延解决时限 + 累加暂停分钟 */
-        static SlaChange resume(SlaPauseService.ResumeOutcome outcome) {
-            return new SlaChange(null, true, outcome.resolutionDeadline(), outcome.pausedMinutes());
-        }
+    /** §9.4「退出暂停态」的补丁：清空暂停起点 + 顺延解决时限 + 累加暂停分钟（resume / close 共用） */
+    private TicketStatePatch resumePatch(SlaPauseService.ResumeOutcome outcome) {
+        return TicketStatePatch.builder()
+                .clearSlaPausedAt(true)
+                .resolutionDeadline(outcome.resolutionDeadline())
+                .slaPausedMinutes(outcome.pausedMinutes())
+                .build();
     }
 
     /**

@@ -57,4 +57,19 @@ public class TicketSlaCalculatorImpl implements TicketSlaCalculator {
                 createdAt.plusMinutes(policy.getResponseMinutes()),
                 createdAt.plusMinutes(policy.getResolutionMinutes()));
     }
+
+    @Override
+    public LocalDateTime reopenResolutionDeadline(Long slaPolicyId, LocalDateTime reopenAt) {
+        if (slaPolicyId == null || reopenAt == null) {
+            return null;
+        }
+        // 按 id 取「工单冻结的那一版」策略（§9.1/§9.7 版本化：不受新版本影响）
+        SlaPolicy policy = slaPolicyService.getById(slaPolicyId);
+        if (policy == null || policy.getResolutionMinutes() == null) {
+            log.warn("[SLA] 重新打开时取不到策略或 resolution_minutes（policyId={}），解决时限保持不变",
+                    slaPolicyId);
+            return null;
+        }
+        return reopenAt.plusMinutes(policy.getResolutionMinutes());
+    }
 }

@@ -38,6 +38,26 @@ public interface TicketSlaCalculator {
     SlaSnapshot calculate(TicketPriority priority, LocalDateTime createdAt);
 
     /**
+     * 重新打开后的新一轮解决时限（工单 D4-04，规格基线 §9.6）。
+     *
+     * <pre>
+     * resolution_deadline = reopen 时间 + resolution_minutes
+     * </pre>
+     *
+     * <p>⚠️ 用的是 <b>{@code ticket.sla_policy_id} 指向的那一版策略</b>，不是「当前 ACTIVE 的那版」——
+     * §9.1/§9.7 规定 SLA 策略版本化：存量工单指向旧版本、不受新版本影响、可追溯。
+     *
+     * <p>注意这<b>不是</b>「在旧 deadline 上顺延」：§9.6 是<b>整轮重算</b>，
+     * 与 §9.4 的暂停顺延（累加）语义不同。
+     *
+     * @param slaPolicyId 工单创建时冻结的策略版本 id
+     * @param reopenAt    重新打开的时刻
+     * @return 新的解决截止；<b>策略不存在或缺 {@code resolution_minutes} 时返回 {@code null}</b>
+     *         （由调用方决定——D4-04 的选择是保持原 deadline 不动并记 warn，不破坏数据）
+     */
+    LocalDateTime reopenResolutionDeadline(Long slaPolicyId, LocalDateTime reopenAt);
+
+    /**
      * 一次 SLA 计算的产物。
      *
      * @param policyId           创建时适用的策略版本 id（§9.1 追溯用）

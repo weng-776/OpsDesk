@@ -22,7 +22,8 @@ import java.util.Set;
  * <p>规格依据：规格基线 <b>§7.2 状态 × 角色 × 动作矩阵（权威）</b>、§7.3、§7.4、§6.2、§6.3；
  * API 文档 §8.12。
  *
- * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer；D4-03 的 #8 hold / #9 resume。
+ * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer；
+ * D4-03 的 #8 hold / #9 resume；D4-04 的 #10 resolve / #11 close / #12 reject / #13 start(REOPENED)。
  *
  * <h2>为什么是「判定表」而不是 if-else</h2>
  * §7.2 是一张 15 行的表。写成 if-else 链会有两个后果：
@@ -61,18 +62,46 @@ public class TicketStateMachine {
     private static final Set<Role> AGENT_OR_ADMIN = Set.of(Role.AGENT, Role.ADMIN);
 
     /**
+     * 「不限角色」—— 只靠身份（是不是创建人）判定。
+     *
+     * <p>矩阵 #11 close / #12 reject 的「允许角色」写的是「创建人」，而创建人可能是
+     * EMPLOYEE / AGENT / ADMIN 任意一种，所以这里<b>不能</b>用角色白名单去表达，
+     * 只能放开角色、由 {@link Precondition#CREATOR_OR_ADMIN} 判身份。
+     */
+    private static final Set<Role> ANY_ROLE = Set.of();
+
+    /**
      * 附加约束（§7.2 的「附加约束」列里那些「只有某个人能做」的规则）。
      *
      * <p>与 {@link #roles} 的分工：角色是<b>粗筛</b>（你是 IT 人员吗），
-     * 前置条件是<b>细筛</b>（你是这张单的处理人吗）。两者都过才放行。
+     * 前置条件是<b>细筛</b>（你是这张单的处理人 / 创建人吗）。两者都过才放行。
+     *
+     * <h2>⚠️ 两种约束的拒绝错误码不同</h2>
+     * <ul>
+     *   <li>{@code ASSIGNEE_OR_ADMIN} → <b>40301</b>：API 文档 §8.12 的错误表明确列了
+     *       「非当前处理人执行 start/hold/resume/<b>resolve</b>」→ {@code 40301}</li>
+     *   <li>{@code CREATOR_OR_ADMIN} → <b>40300</b>：§8.12 的错误表<b>没有</b>把「非创建人」
+     *       归入 40301（40301 是「超出数据范围」），D4-04 的验收也明确「非 creator 调 reject → 40300」</li>
+     * </ul>
      */
     public enum Precondition {
-        /** 无附加约束（如 assign / accept） */
-        NONE,
-        /** 必须是当前处理人，或 ADMIN（矩阵 #5 start、#8 hold、#9 resume） */
-        ASSIGNEE_OR_ADMIN,
-        /** 必须是创建人，或 ADMIN（矩阵 #11 close、#4/#7 cancel） */
-        CREATOR_OR_ADMIN
+        /** 无附加约束（如 assign / accept / transfer） */
+        NONE(null),
+        /** 必须是当前处理人，或 ADMIN（矩阵 #5 start、#8 hold、#9 resume、#10 resolve、#13 start） */
+        ASSIGNEE_OR_ADMIN(ErrorCode.DATA_SCOPE_DENIED),
+        /** 必须是创建人，或 ADMIN（矩阵 #11 close、#12 reject、#4/#7 cancel） */
+        CREATOR_OR_ADMIN(ErrorCode.FORBIDDEN);
+
+        /** 约束不满足时抛的错误码；{@code NONE} 为 null */
+        private final ErrorCode deniedCode;
+
+        Precondition(ErrorCode deniedCode) {
+            this.deniedCode = deniedCode;
+        }
+
+        public ErrorCode deniedCode() {
+            return deniedCode;
+        }
     }
 
     /**
@@ -95,11 +124,11 @@ public class TicketStateMachine {
     }
 
     /**
-     * §7.2 矩阵登记表 —— 已登记 D4-01 的 #2 / #3 / #5、D4-02 的 #6、D4-03 的 #8 / #9。
+     * §7.2 矩阵登记表 —— 已登记 #2 / #3 / #5 / #6 / #8 / #9 / #10 / #11 / #12 / #13。
      *
-     * <p>D4-04~05 会继续追加（resolve / close / reject / cancel / force-close），
-     * 以及矩阵 #13 的 {@code REOPENED --start--> IN_PROGRESS} ——
-     * 因为索引 key 是 {@code (from, action)}，同一个 {@code start} 天然支持两个来源状态。
+     * <p>D4-05 会继续追加（#4 / #7 cancel、#14 force-close）。
+     * 索引 key 是 {@code (from, action)}，所以同一个 {@code start} 天然支持两个来源状态
+     * （#5 {@code ASSIGNED} 与 #13 {@code REOPENED}）—— 这也是 D4-04 只需加一行就能支持 reopen 的原因。
      */
     private static final List<Transition> TRANSITIONS = List.of(
             // #2 OPEN --assign--> ASSIGNED：需 ticket:assign，可指定 assignee_id
@@ -124,7 +153,24 @@ public class TicketStateMachine {
                     AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false),
             // #9 WAITING_USER --resume--> IN_PROGRESS：仅 assignee / ADMIN，SLA 恢复并顺延（§9.4）
             new Transition(TicketStatus.WAITING_USER, TicketHistoryAction.RESUME, TicketStatus.IN_PROGRESS,
-                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false)
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false),
+            // #10 IN_PROGRESS --resolve--> WAITING_CONFIRM：assignee/ADMIN，写 resolved_at + SLA 暂停（§9.4）
+            new Transition(TicketStatus.IN_PROGRESS, TicketHistoryAction.RESOLVE, TicketStatus.WAITING_CONFIRM,
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, false),
+            // #11 WAITING_CONFIRM --close--> CLOSED：创建人/ADMIN，写 closed_at + SLA 恢复（顺延同 resume）
+            //     ⚠️ roles = ANY_ROLE：创建人可能是 EMPLOYEE/AGENT/ADMIN 任意角色，只能靠身份判
+            new Transition(TicketStatus.WAITING_CONFIRM, TicketHistoryAction.CLOSE, TicketStatus.CLOSED,
+                    ANY_ROLE, Precondition.CREATOR_OR_ADMIN, false),
+            // #12 WAITING_CONFIRM --reject--> REOPENED：**仅创建人**，按 §9.6 重算 SLA
+            //     ⚠️ §7.3：必须停在 REOPENED，**不可**一步走完 REOPENED → IN_PROGRESS
+            //        （本表天然满足：REJECT 的目标状态就是 REOPENED，要进 IN_PROGRESS 得再走 #13）
+            new Transition(TicketStatus.WAITING_CONFIRM, TicketHistoryAction.REJECT, TicketStatus.REOPENED,
+                    ANY_ROLE, Precondition.CREATOR_OR_ADMIN, false),
+            // #13 REOPENED --start--> IN_PROGRESS：沿用原 assignee（矩阵 #13）
+            //     ⚠️ stampsFirstResponse = true 但**不会覆盖**已有值 ——
+            //        apply() 只在 firstResponseAt 为空时才传，§9.6 要求「保留首轮值」
+            new Transition(TicketStatus.REOPENED, TicketHistoryAction.START, TicketStatus.IN_PROGRESS,
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, true)
     );
 
     /**
@@ -223,9 +269,11 @@ public class TicketStateMachine {
         if (!Objects.equals(expected, user.userId())) {
             log.warn("[状态机] 前置条件不符被拒：ticketId={} precondition={} expected={} actual={}",
                     ticket.getId(), precondition, expected, user.userId());
-            throw BizException.dataScopeDenied(precondition == Precondition.ASSIGNEE_OR_ADMIN
-                    ? "仅当前处理人或管理员可执行该操作"
-                    : "仅创建人或管理员可执行该操作");
+            // ⚠️ 错误码由 Precondition 自己带：处理人约束 → 40301；创建人约束 → 40300（见枚举注释）
+            throw new BizException(precondition.deniedCode(),
+                    precondition == Precondition.ASSIGNEE_OR_ADMIN
+                            ? "仅当前处理人或管理员可执行该操作"
+                            : "仅创建人或管理员可执行该操作");
         }
     }
 }

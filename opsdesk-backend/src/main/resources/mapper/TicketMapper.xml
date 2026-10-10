@@ -62,25 +62,37 @@
     </update>
 
     <!--
-      带 SLA 字段的状态流转 CAS（工单 D4-03，规格基线 §9.4）。
+      带附加列的状态流转 CAS（工单 D4-03 引入，D4-04 扩展）。
 
-      · hold   ：只写 sla_paused_at = now
-      · resume ：清空 sla_paused_at（clearSlaPausedAt=true）+ 顺延 resolution_deadline
-                 + 累加 sla_paused_minutes
+      覆盖三种流转：
+        · hold    ：sla_paused_at = now
+        · resume  ：清空 sla_paused_at + 顺延 resolution_deadline + 累加 sla_paused_minutes
+        · resolve ：sla_paused_at = now + resolved_at = now
+        · close   ：同 resume 的 SLA 恢复 + closed_at = now
+        · reject  ：清空暂停 + 新一轮 resolution_deadline + 重置 SLA 状态/标志位 + reopen_count++
 
-      ⚠️ 这里**故意没有 response_deadline** —— §9.4 明确「响应时限不参与顺延」。
-         不写它，就不可能在改 SLA 时误伤它（结构性保证）。
+      附加列全部走 TicketStatePatch（null = 不写，保持原值）。
       ⚠️ clearSlaPausedAt 是必需的：<if test="x != null"> 表达不了「置 NULL」。
+      ⚠️ 这里**故意没有 response_deadline** —— §9.4 明确「响应时限不参与顺延」，
+         不写它就不可能在改 SLA 时误伤它（结构性保证）。
       ⚠️ 用 <include refid="casWhere"/> 与上面的 updateStatusCas 共用同一份 CAS 条件。
     -->
-    <update id="updateStatusCasWithSla">
+    <update id="updateStatusCasExtended">
         UPDATE ticket
         SET status = #{to},
             version = version + 1
-        <if test="slaPausedAt != null">, sla_paused_at = #{slaPausedAt}</if>
-        <if test="clearSlaPausedAt">, sla_paused_at = NULL</if>
-        <if test="resolutionDeadline != null">, resolution_deadline = #{resolutionDeadline}</if>
-        <if test="slaPausedMinutes != null">, sla_paused_minutes = #{slaPausedMinutes}</if>
+        <if test="patch.assigneeId != null">, assignee_id = #{patch.assigneeId}</if>
+        <if test="patch.firstResponseAt != null">, first_response_at = #{patch.firstResponseAt}</if>
+        <if test="patch.slaPausedAt != null">, sla_paused_at = #{patch.slaPausedAt}</if>
+        <if test="patch.clearSlaPausedAt">, sla_paused_at = NULL</if>
+        <if test="patch.resolutionDeadline != null">, resolution_deadline = #{patch.resolutionDeadline}</if>
+        <if test="patch.slaPausedMinutes != null">, sla_paused_minutes = #{patch.slaPausedMinutes}</if>
+        <if test="patch.resolvedAt != null">, resolved_at = #{patch.resolvedAt}</if>
+        <if test="patch.closedAt != null">, closed_at = #{patch.closedAt}</if>
+        <if test="patch.reopenCount != null">, reopen_count = #{patch.reopenCount}</if>
+        <if test="patch.slaResolutionState != null">, sla_resolution_state = #{patch.slaResolutionState}</if>
+        <if test="patch.slaWarningNotified != null">, sla_warning_notified = #{patch.slaWarningNotified}</if>
+        <if test="patch.slaBreachNotified != null">, sla_breach_notified = #{patch.slaBreachNotified}</if>
         <include refid="casWhere"/>
     </update>
 

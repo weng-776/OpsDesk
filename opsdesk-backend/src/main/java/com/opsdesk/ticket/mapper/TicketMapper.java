@@ -3,6 +3,7 @@ package com.opsdesk.ticket.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.ticket.entity.Ticket;
+import com.opsdesk.ticket.statemachine.TicketStatePatch;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -56,38 +57,29 @@ public interface TicketMapper extends BaseMapper<Ticket> {
                         @Param("firstResponseAt") LocalDateTime firstResponseAt);
 
     /**
-     * 带 SLA 字段的状态流转 CAS（工单 D4-03，规格基线 §9.4）。
+     * 带附加列的状态流转 CAS（工单 D4-03 引入，D4-04 扩展）。
      *
      * <p>与 {@link #updateStatusCas} 是<b>同一个 CAS 语义</b>（共用 XML 里的 {@code casWhere} 片段：
      * {@code id + status + version + deleted} 四条件，影响 0 行 = 并发冲突 → 40900），
-     * 只是额外能改 SLA 三列。
+     * 只是额外能改「SLA + 生命周期」那些列。
      *
      * <h2>为什么不复用 {@link #updateStatusCas}</h2>
-     * {@code resume} 需要把 {@code sla_paused_at} <b>置为 NULL</b>，
-     * 而 {@code <if test="x != null">} 只能表达「非空才写」，表达不了「置空」。
-     * 加一个 {@code boolean clearSlaPausedAt} 标志位即可（见 XML）。
+     * 这些列必须能表达三种意图：「写一个值」「不写（保持原值）」「<b>置 NULL</b>」。
+     * {@code <if test="x != null">} 只能表达前两种，所以附加列统一收进
+     * {@link TicketStatePatch}（{@code null} = 不写），其中「置 NULL」用
+     * {@code clearSlaPausedAt} 标志位单独表达。
      *
      * <h2>⚠️ 这里没有 {@code response_deadline}</h2>
-     * §9.4 明确「{@code response_deadline} 不参与顺延」。本方法<b>根本不接收它</b>，
+     * §9.4 明确「{@code response_deadline} 不参与顺延」，{@link TicketStatePatch} 也不提供该字段 ——
      * 所以「响应时限不被改动」是结构性保证，不靠调用方自觉。
      *
-     * @param id                 工单 id
-     * @param from               期望的当前状态（不匹配则 0 行）
-     * @param to                 目标状态
-     * @param version            期望版本号（乐观锁）
-     * @param slaPausedAt        写入 {@code sla_paused_at}；{@code null} 表示不写这一列
-     * @param clearSlaPausedAt   置 {@code sla_paused_at = NULL}（resume 用）
-     * @param resolutionDeadline 新的解决截止；{@code null} 表示不写
-     * @param slaPausedMinutes   新的累计暂停分钟；{@code null} 表示不写
+     * @param patch 要写的附加列；{@code null} 的字段不写（保持原值）
      * @return 影响行数（0 = CAS 失败）
      */
-    int updateStatusCasWithSla(@Param("id") Long id,
-                               @Param("from") TicketStatus from,
-                               @Param("to") TicketStatus to,
-                               @Param("version") Integer version,
-                               @Param("slaPausedAt") LocalDateTime slaPausedAt,
-                               @Param("clearSlaPausedAt") boolean clearSlaPausedAt,
-                               @Param("resolutionDeadline") LocalDateTime resolutionDeadline,
-                               @Param("slaPausedMinutes") Integer slaPausedMinutes);
+    int updateStatusCasExtended(@Param("id") Long id,
+                                @Param("from") TicketStatus from,
+                                @Param("to") TicketStatus to,
+                                @Param("version") Integer version,
+                                @Param("patch") TicketStatePatch patch);
 }
 

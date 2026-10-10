@@ -42,7 +42,8 @@ public interface TicketFlowService {
     TicketDetailVO accept(Long ticketId);
 
     /**
-     * 开始处理（矩阵 #5）：{@code ASSIGNED → IN_PROGRESS}。
+     * 开始处理（矩阵 #5 与 #13）：{@code ASSIGNED → IN_PROGRESS}，或
+     * {@code REOPENED → IN_PROGRESS}（驳回后处理人再次接手，沿用原 assignee）。
      *
      * <p>权限：{@code ticket:process}；仅当前 assignee 或 ADMIN。
      *
@@ -95,4 +96,53 @@ public interface TicketFlowService {
      * @return 流转后的工单快照
      */
     TicketDetailVO resume(Long ticketId);
+
+    /**
+     * 标记解决（矩阵 #10）：{@code IN_PROGRESS → WAITING_CONFIRM}。
+     *
+     * <p>权限：{@code ticket:resolve}；仅当前 assignee 或 ADMIN。无请求体。
+     *
+     * <p>副作用：写 {@code resolved_at}；<b>SLA 进入暂停</b>（{@code sla_paused_at = now}，§9.4
+     * 规定 {@code WAITING_CONFIRM} 是暂停态 —— 等员工确认的时间不该由 IT 背锅）。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO resolve(Long ticketId);
+
+    /**
+     * 关闭工单（矩阵 #11）：{@code WAITING_CONFIRM → CLOSED}。
+     *
+     * <p>权限：{@code ticket:close}；<b>创建人或 ADMIN</b>（注意 creator 可能是任意角色，
+     * 所以靠身份判而不是角色判）。无请求体。
+     *
+     * <p>副作用：写 {@code closed_at}；SLA <b>恢复</b>（退出 {@code WAITING_CONFIRM} 的暂停，
+     * 顺延逻辑与 {@link #resume} 完全一致，§9.4）。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO close(Long ticketId);
+
+    /**
+     * 驳回（矩阵 #12）：{@code WAITING_CONFIRM → REOPENED}。
+     *
+     * <p>权限：{@code ticket:reopen}；<b>仅创建人</b>。无请求体。
+     *
+     * <p>副作用（§9.6，逐条）：
+     * <pre>
+     * resolution_deadline  = reopen 时间 + resolution_minutes   ← 新一轮（整轮重算，非累加）
+     * sla_resolution_state = NORMAL
+     * sla_warning_notified = 0
+     * sla_breach_notified  = 0
+     * reopen_count        += 1
+     * first_response_at    保留首轮值，不重置
+     * </pre>
+     * 另外必须退出暂停态（{@code sla_paused_at = null} 并累加暂停分钟）——
+     * §9.4 的状态表里 {@code REOPENED} <b>不是</b>暂停态。
+     *
+     * <p>⚠️ §7.3：<b>{@code REOPENED} 是持久状态</b>。本方法只走到 {@code REOPENED} 为止，
+     * 绝不会顺手推进到 {@code IN_PROGRESS} —— 那要由处理人再调一次 {@link #start}（矩阵 #13）。
+     *
+     * @return 流转后的工单快照（状态为 {@code REOPENED}）
+     */
+    TicketDetailVO reject(Long ticketId);
 }

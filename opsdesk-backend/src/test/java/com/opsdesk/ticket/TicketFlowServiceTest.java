@@ -4,6 +4,7 @@ import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.Role;
+import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
@@ -543,6 +544,172 @@ class TicketFlowServiceTest {
         assertThat(resumeRows).hasSize(1);
         assertThat(resumeRows.get(0).get("from_status")).isEqualTo("WAITING_USER");
         assertThat(resumeRows.get(0).get("to_status")).isEqualTo("IN_PROGRESS");
+    }
+
+    // ==================== D4-04 解决 / 关闭 / 驳回（矩阵 #10 / #11 / #12 / #13）====================
+
+    @Test
+    @DisplayName("D4-04：resolve → WAITING_CONFIRM，写 resolved_at 且 SLA 进入暂停")
+    void resolve进入待确认并暂停SLA() {
+        // 工单 2：IN_PROGRESS、assignee = agent_zhang(2)
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+
+        TicketDetailVO vo = ticketFlowService.resolve(2L);
+
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.WAITING_CONFIRM);
+        assertThat(vo.getResolvedAt()).as("§7.2 #10：写 resolved_at").isNotNull();
+
+        Ticket db = ticketService.getById(2L);
+        assertThat(db.getSlaPausedAt())
+                .as("§9.4：WAITING_CONFIRM 是暂停态 → sla_paused_at = now").isNotNull();
+    }
+
+    @Test
+    @DisplayName("D4-04 验收1（§25.4 #4）：reject → REOPENED，reopen_count+1、deadline 重算、超时标志归零")
+    void 驳回重新打开并按96重算() {
+        // 工单 3：WAITING_CONFIRM、creator = emp_wang(4)、assignee = agent_li(3)
+        // 先把 SLA 状态与超时标志「弄脏」，才能证明 reject 确实把它们归零了
+        jdbcTemplate.update("UPDATE ticket SET sla_resolution_state = 'BREACHED', "
+                + "sla_warning_notified = 1, sla_breach_notified = 1, reopen_count = 0, "
+                + "sla_paused_at = ? WHERE id = 3",
+                java.sql.Timestamp.valueOf(LocalDateTime.now()
+                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)));
+        sqlSessionTemplate.clearCache();
+
+        Integer resolutionMinutes = jdbcTemplate.queryForObject(
+                "SELECT p.resolution_minutes FROM sla_policy p JOIN ticket t ON t.sla_policy_id = p.id "
+                        + "WHERE t.id = 3", Integer.class);
+        assertThat(resolutionMinutes).as("工单 3 应能查到冻结版本的策略").isNotNull();
+
+        LocalDateTime before = LocalDateTime.now();
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        TicketDetailVO vo = ticketFlowService.reject(3L);
+        LocalDateTime after = LocalDateTime.now();
+
+        // ① 状态与计数
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.REOPENED);
+        Ticket db = ticketService.getById(3L);
+        assertThat(db.getReopenCount()).isEqualTo(1);
+
+        // ② resolution_deadline = reopen 时间 + resolution_minutes（整轮重算）
+        assertThat(db.getResolutionDeadline()).isNotNull();
+        assertThat(java.time.Duration.between(before, db.getResolutionDeadline()).toMinutes())
+                .as("§9.6：新一轮解决时限 = reopen 时间 + %d 分钟", resolutionMinutes)
+                .isBetween((long) resolutionMinutes - 1, (long) resolutionMinutes + 1);
+
+        // ③ SLA 状态与两个超时标志归零
+        assertThat(db.getSlaResolutionState()).isEqualTo(SlaState.NORMAL);
+        assertThat(db.getSlaWarningNotified()).isZero();
+        assertThat(db.getSlaBreachNotified()).isZero();
+
+        // ④ 退出暂停态（§9.4：REOPENED 不是暂停态）
+        assertThat(db.getSlaPausedAt()).isNull();
+
+        // ⑤ first_response_at 保留首轮值，不重置
+        assertThat(db.getFirstResponseAt()).as("§9.6：保留首轮响应时间").isNotNull();
+
+        assertThat(after).isAfter(before);
+    }
+
+    @Test
+    @DisplayName("D4-04 验收2（§7.3）：驳回后必须再 start 一次才进 IN_PROGRESS，中间态 REOPENED 真实存在过")
+    void 驳回后需再start一次() {
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        TicketDetailVO rejected = ticketFlowService.reject(3L);
+        assertThat(rejected.getStatus())
+                .as("⚠️ §7.3：接口必须停在 REOPENED，不能一步走到 IN_PROGRESS").isEqualTo(TicketStatus.REOPENED);
+
+        // 历史里确实留下了 WAITING_CONFIRM → REOPENED 这一条（中间态可观察）
+        List<java.util.Map<String, Object>> rejectRows = jdbcTemplate.queryForList(
+                "SELECT from_status, to_status FROM ticket_history "
+                        + "WHERE ticket_id = 3 AND action = 'REJECT'");
+        assertThat(rejectRows).hasSize(1);
+        assertThat(rejectRows.get(0).get("from_status")).isEqualTo("WAITING_CONFIRM");
+        assertThat(rejectRows.get(0).get("to_status")).isEqualTo("REOPENED");
+
+        // 此刻 REOPENED 不能直接 close（矩阵里没有 (REOPENED, CLOSE)）
+        setCurrentUser(ADMIN, Role.ADMIN);
+        assertThat(catchBiz(() -> ticketFlowService.close(3L)))
+                .as("REOPENED 不能直接关闭").isEqualTo(ErrorCode.CONFLICT);
+
+        // 处理人 start（矩阵 #13）→ 才进 IN_PROGRESS
+        setCurrentUser(AGENT_LI, Role.AGENT);
+        TicketDetailVO started = ticketFlowService.start(3L);
+        assertThat(started.getStatus()).isEqualTo(TicketStatus.IN_PROGRESS);
+
+        List<java.util.Map<String, Object>> startRows = jdbcTemplate.queryForList(
+                "SELECT from_status, to_status FROM ticket_history "
+                        + "WHERE ticket_id = 3 AND action = 'START' AND from_status = 'REOPENED'");
+        // ⚠️ 只数 from_status = REOPENED 那条：种子数据里工单 3 本来就有
+        //    ASSIGNED → IN_PROGRESS 的历史（它当前是 WAITING_CONFIRM，必然走过 IN_PROGRESS）
+        assertThat(startRows).hasSize(1);
+        assertThat(startRows.get(0).get("to_status")).isEqualTo("IN_PROGRESS");
+    }
+
+    @Test
+    @DisplayName("D4-04：close → CLOSED，写 closed_at，SLA 恢复并顺延（同 resume）")
+    void 关闭写关闭时间并恢复SLA() {
+        // 模拟 WAITING_CONFIRM 期间的暂停（正常由 resolve 写入），并回拨 2 分钟
+        jdbcTemplate.update("UPDATE ticket SET sla_paused_at = ? WHERE id = 3",
+                java.sql.Timestamp.valueOf(LocalDateTime.now().minusMinutes(2)
+                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)));
+        sqlSessionTemplate.clearCache();
+
+        Ticket before = ticketService.getById(3L);
+        LocalDateTime deadlineBefore = before.getResolutionDeadline();
+        assertThat(deadlineBefore).isNotNull();
+
+        // 工单 3 的创建人 = emp_wang(4)
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        TicketDetailVO vo = ticketFlowService.close(3L);
+
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.CLOSED);
+        assertThat(vo.getClosedAt()).as("§7.2 #11：写 closed_at").isNotNull();
+
+        Ticket db = ticketService.getById(3L);
+        assertThat(db.getSlaPausedAt()).as("§9.4：退出暂停态").isNull();
+        long shifted = java.time.Duration.between(deadlineBefore, db.getResolutionDeadline()).getSeconds();
+        assertThat(shifted).as("SLA 恢复：顺延约 120 秒（实际 %d）", shifted).isBetween(115L, 130L);
+    }
+
+    @Test
+    @DisplayName("D4-04 验收3：IN_PROGRESS 直接 close → 40900；非 creator 调 reject → 40300")
+    void 状态前置与创建人约束() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+        // 工单 2 是 IN_PROGRESS —— 矩阵里没有 (IN_PROGRESS, CLOSE)
+        assertThat(catchBiz(() -> ticketFlowService.close(2L)))
+                .as("§25.4 #3：IN_PROGRESS 直接 close → 40900").isEqualTo(ErrorCode.CONFLICT);
+
+        // 工单 3 的 creator 是 emp_wang(4)；agent_li(3) 是处理人（可见）但不是创建人
+        setCurrentUser(AGENT_LI, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.reject(3L)))
+                .as("非 creator → 40300（不是 40301）").isEqualTo(ErrorCode.FORBIDDEN);
+        assertThat(catchBiz(() -> ticketFlowService.close(3L)))
+                .as("非 creator → 40300").isEqualTo(ErrorCode.FORBIDDEN);
+
+        // 创建人自己可以
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        assertThat(ticketFlowService.close(3L).getStatus()).isEqualTo(TicketStatus.CLOSED);
+    }
+
+    @Test
+    @DisplayName("D4-04：resolve 限当前处理人（非处理人 → 40301）")
+    void resolve限处理人() {
+        // 工单 3：WAITING_CONFIRM、assignee = agent_li(3)。先看 resolve 的状态前置
+        setCurrentUser(AGENT_LI, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.resolve(3L)))
+                .as("WAITING_CONFIRM 不能再 resolve（表里无该入边）").isEqualTo(ErrorCode.CONFLICT);
+
+        // 工单 2：IN_PROGRESS、assignee = agent_zhang(2)
+        // 把部门改成 agent_zhang 的部门，让 agent_li 也能看见它 → 隔离出「前置条件」而非「数据范围」
+        Long zhangDept = jdbcTemplate.queryForObject(
+                "SELECT department_id FROM `user` WHERE id = ?", Long.class, AGENT_ZHANG);
+        jdbcTemplate.update("UPDATE ticket SET department_id = ? WHERE id = 2", zhangDept);
+        sqlSessionTemplate.clearCache();
+
+        setCurrentUser(AGENT_LI, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.resolve(2L)))
+                .as("可见但不是处理人 → 40301").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
     }
 
     // ==================== 工具 ====================
