@@ -10,6 +10,7 @@ import com.opsdesk.ticket.entity.Ticket;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -266,17 +267,12 @@ public class TicketStateMachine {
 
     /** ③.2 角色粗筛 */
     private void assertRole(Transition transition, UserContext.CurrentUser user) {
+        if (roleAllowed(transition, user)) {
+            return;
+        }
         if (user == null) {
             // 正常轮不到这里（AuthInterceptor 先返 40100），保守 fail-closed
             throw new BizException(ErrorCode.UNAUTHORIZED);
-        }
-        if (transition.roles().isEmpty()) {
-            return;
-        }
-        for (Role allowed : transition.roles()) {
-            if (user.roles().contains(allowed)) {
-                return;
-            }
         }
         log.warn("[状态机] 角色不符被拒：action={} roles={} userRoles={}",
                 transition.action(), transition.roles(), user.roles());
@@ -286,26 +282,91 @@ public class TicketStateMachine {
     /** ③.3 前置条件细筛 */
     private void assertPrecondition(Precondition precondition, Ticket ticket,
                                     UserContext.CurrentUser user) {
-        if (precondition == Precondition.NONE) {
+        if (preconditionMet(precondition, ticket, user)) {
             return;
         }
-        // ADMIN 一律放行（§7.2 每条约束都写了「或 ADMIN」）
+        log.warn("[状态机] 前置条件不符被拒：ticketId={} precondition={} actual={}",
+                ticket.getId(), precondition, user == null ? null : user.userId());
+        // ⚠️ 错误码由 Precondition 自己带：处理人约束 → 40301；创建人约束 → 40300（见枚举注释）
+        throw new BizException(precondition.deniedCode(),
+                precondition == Precondition.ASSIGNEE_OR_ADMIN
+                        ? "仅当前处理人或管理员可执行该操作"
+                        : "仅创建人或管理员可执行该操作");
+    }
+
+    // ==================== 纯判定（给 canOperate 用，不抛异常）====================
+
+    /**
+     * 当前用户对这张工单<b>可执行</b>的流转动作（API 文档 §16.8 的 {@code canOperate}）。
+     *
+     * <p>与 {@link #check} <b>共用同一套判定</b>（角色 + 前置条件），
+     * 所以「列表里出现的动作」与「真正调用不会被拒的动作」必然一致 ——
+     * 不会出现「按钮能点但一点就 403」。
+     *
+     * <p>判定的是三件事：① 该状态下这个动作有登记（终态天然无动作）；
+     * ② 当前用户的角色在允许集合内；③ 附加约束满足（如「必须是当前处理人」）。
+     *
+     * <p>⚠️ <b>不是安全边界</b>（§16.8 明确）：仅用于前端渲染按钮，
+     * 每个流转接口仍独立走 {@link #check}。
+     *
+     * @return 动作列表；无任何可执行动作时返回空列表（不是 null）
+     */
+    public List<TicketHistoryAction> availableActions(Ticket ticket, UserContext.CurrentUser user) {
+        if (ticket == null || user == null) {
+            return List.of();
+        }
+        List<TicketHistoryAction> actions = new ArrayList<>();
+        for (Transition transition : TRANSITIONS) {
+            if (transition.from() != ticket.getStatus()) {
+                continue;
+            }
+            if (!roleAllowed(transition, user)) {
+                continue;
+            }
+            if (!preconditionMet(transition.precondition(), ticket, user)) {
+                continue;
+            }
+            // 同一状态下同一动作只登记一次，去重是防御性的（如将来误加重复行）
+            if (!actions.contains(transition.action())) {
+                actions.add(transition.action());
+            }
+        }
+        return actions;
+    }
+
+    /** 角色是否在允许集合内（空集 = 不限角色）。{@code user} 为 null → false（fail-closed） */
+    private boolean roleAllowed(Transition transition, UserContext.CurrentUser user) {
+        if (user == null) {
+            return false;
+        }
+        if (transition.roles().isEmpty()) {
+            return true;
+        }
+        for (Role allowed : transition.roles()) {
+            if (user.roles().contains(allowed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 附加约束是否满足（ADMIN 一律放行，§7.2 每条约束都写了「或 ADMIN」） */
+    private boolean preconditionMet(Precondition precondition, Ticket ticket,
+                                    UserContext.CurrentUser user) {
+        if (precondition == Precondition.NONE) {
+            return true;
+        }
+        if (user == null) {
+            return false;
+        }
         if (user.roles().contains(Role.ADMIN)) {
-            return;
+            return true;
         }
         Long expected = switch (precondition) {
             case ASSIGNEE_OR_ADMIN -> ticket.getAssigneeId();
             case CREATOR_OR_ADMIN -> ticket.getCreatorId();
             case NONE -> null;
         };
-        if (!Objects.equals(expected, user.userId())) {
-            log.warn("[状态机] 前置条件不符被拒：ticketId={} precondition={} expected={} actual={}",
-                    ticket.getId(), precondition, expected, user.userId());
-            // ⚠️ 错误码由 Precondition 自己带：处理人约束 → 40301；创建人约束 → 40300（见枚举注释）
-            throw new BizException(precondition.deniedCode(),
-                    precondition == Precondition.ASSIGNEE_OR_ADMIN
-                            ? "仅当前处理人或管理员可执行该操作"
-                            : "仅创建人或管理员可执行该操作");
-        }
+        return Objects.equals(expected, user.userId());
     }
 }

@@ -7,12 +7,14 @@ import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
+import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.organization.entity.Department;
 import com.opsdesk.organization.service.DepartmentService;
 import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
+import com.opsdesk.ticket.statemachine.TicketStateMachine;
 import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import com.opsdesk.user.entity.User;
@@ -65,15 +67,18 @@ public class TicketQueryServiceImpl implements TicketQueryService {
     private final UserService userService;
     private final DepartmentService departmentService;
     private final TicketDataScopeHelper dataScopeHelper;
+    private final TicketStateMachine ticketStateMachine;
 
     public TicketQueryServiceImpl(TicketService ticketService,
                                   UserService userService,
                                   DepartmentService departmentService,
-                                  TicketDataScopeHelper dataScopeHelper) {
+                                  TicketDataScopeHelper dataScopeHelper,
+                                  TicketStateMachine ticketStateMachine) {
         this.ticketService = ticketService;
         this.userService = userService;
         this.departmentService = departmentService;
         this.dataScopeHelper = dataScopeHelper;
+        this.ticketStateMachine = ticketStateMachine;
     }
 
     // ==================== 对外 ====================
@@ -155,6 +160,14 @@ public class TicketQueryServiceImpl implements TicketQueryService {
         vo.setCancelReason(ticket.getCancelReason());
         vo.setResolvedAt(ticket.getResolvedAt());
         vo.setClosedAt(ticket.getClosedAt());
+
+        // §16.8 的 canOperate：当前用户可执行的流转动作（前端据此渲染按钮）。
+        // 与流转接口共用 TicketStateMachine 的同一套判定（角色 + 前置条件），
+        // 所以「按钮出现」与「点了能成功」必然一致。
+        // ⚠️ 它不是安全边界 —— 每个流转接口仍独立校验（§16.8 明确）。
+        vo.setCanOperate(ticketStateMachine.availableActions(ticket, UserContext.get()).stream()
+                .map(TicketHistoryAction::apiName)
+                .toList());
         return vo;
     }
 

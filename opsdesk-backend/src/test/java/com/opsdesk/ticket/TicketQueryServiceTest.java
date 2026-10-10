@@ -362,14 +362,15 @@ class TicketQueryServiceTest {
         Set<String> inherited = Arrays.stream(TicketListVO.class.getDeclaredFields())
                 .map(Field::getName).collect(Collectors.toSet());
 
-        assertThat(own).as("§16.8 新增的恰好这 15 个").containsExactlyInAnyOrder(
+        assertThat(own).as("§16.8 新增的恰好这 16 个").containsExactlyInAnyOrder(
                 "description", "source", "creatorId", "departmentId", "assigneeId", "departmentName",
                 "slaPolicyId", "responseDeadline", "firstResponseAt", "slaResponseState",
-                "slaPausedMinutes", "reopenCount", "cancelReason", "resolvedAt", "closedAt");
+                "slaPausedMinutes", "reopenCount", "cancelReason", "resolvedAt", "closedAt",
+                "canOperate");
         assertThat(inherited).as("§16.7 的 12 个").hasSize(12);
 
-        assertThat(own).as("§16.8 里这三个字段本单刻意不做（归 D3-05 / AI 模块 / D4-01）")
-                .doesNotContain("attachments", "aiAnalysis", "canOperate");
+        assertThat(own).as("§16.8 里这两个字段仍未做（归 D3-05 的附件列表 / AI 模块）")
+                .doesNotContain("attachments", "aiAnalysis");
         assertThat(own).as("Entity 的内部字段一个都不该出现")
                 .doesNotContain("version", "deleted", "slaPausedAt",
                         "slaWarningNotified", "slaBreachNotified", "rawResponse");
