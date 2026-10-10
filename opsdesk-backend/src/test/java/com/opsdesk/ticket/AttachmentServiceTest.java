@@ -242,14 +242,17 @@ class AttachmentServiceTest {
     @DisplayName("验收3：上传后列表能查到，字段与 §16.11 对齐（含 uploaderName）")
     void 列表字段装配正确() {
         setCurrentUser(EMP_WANG, Role.EMPLOYEE);
-        attachmentService.upload(1L, new MockMultipartFile(
+        AttachmentUploadVO uploaded = attachmentService.upload(1L, new MockMultipartFile(
                 "file", "log.txt", "text/plain", "log-content".getBytes(StandardCharsets.UTF_8)));
 
         List<AttachmentVO> list = attachmentService.list(1L);
 
-        assertThat(list).as("刚传的附件在列表里").hasSize(1);
-        AttachmentVO vo = list.get(0);
-        assertThat(vo.getId()).isNotNull();
+        // ⚠️ 不断言「列表恰好 1 条」：测试库可能被 HTTP 手工验收 / 其他用例写过数据，
+        //    这不是本测试要验的东西。改为按 id 定位「本次上传的那条」再验字段，
+        //    这样测试不依赖外部状态（此前正是被端到端脚本的残留数据打红）。
+        AttachmentVO vo = list.stream()
+                .filter(a -> a.getId().equals(uploaded.getId()))
+                .findFirst().orElseThrow(() -> new AssertionError("刚传的附件不在列表里"));
         assertThat(vo.getFileName()).isEqualTo("log.txt");
         assertThat(vo.getFileSize()).isEqualTo("log-content".length());
         assertThat(vo.getContentType()).isEqualTo("text/plain");
@@ -289,12 +292,19 @@ class AttachmentServiceTest {
     @DisplayName("验收3：列表按上传时间升序（先传的先出现）")
     void 列表按时间升序() {
         setCurrentUser(EMP_WANG, Role.EMPLOYEE);
-        attachmentService.upload(1L, new MockMultipartFile("file", "a.txt", "text/plain", "1".getBytes()));
-        attachmentService.upload(1L, new MockMultipartFile("file", "b.txt", "text/plain", "2".getBytes()));
-        attachmentService.upload(1L, new MockMultipartFile("file", "c.txt", "text/plain", "3".getBytes()));
+        AttachmentUploadVO a = attachmentService.upload(1L, new MockMultipartFile("file", "a.txt", "text/plain", "1".getBytes()));
+        AttachmentUploadVO b = attachmentService.upload(1L, new MockMultipartFile("file", "b.txt", "text/plain", "2".getBytes()));
+        AttachmentUploadVO c = attachmentService.upload(1L, new MockMultipartFile("file", "c.txt", "text/plain", "3".getBytes()));
 
         List<AttachmentVO> list = attachmentService.list(1L);
-        assertThat(list).extracting(AttachmentVO::getFileName).containsExactly("a.txt", "b.txt", "c.txt");
+
+        // ⚠️ 不用 containsExactly：测试库可能有其他来源的附件（HTTP 手工验收残留等）。
+        //    只取本次上传的三条，断言它们在列表里的「相对顺序」是 a → b → c（升序）。
+        List<String> mine = list.stream()
+                .filter(x -> Set.of(a.getId(), b.getId(), c.getId()).contains(x.getId()))
+                .map(AttachmentVO::getFileName)
+                .toList();
+        assertThat(mine).as("本次上传的三条按上传时间升序").containsExactly("a.txt", "b.txt", "c.txt");
     }
 
     // ==================== 数据范围（SOP §5 红区） ====================

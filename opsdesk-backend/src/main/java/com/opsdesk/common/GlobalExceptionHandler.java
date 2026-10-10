@@ -13,6 +13,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -108,6 +109,24 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
         String msg = "参数类型不正确：" + ex.getName();
         log.warn("[{}]", msg);
+        return ResponseEntity.status(ErrorCode.PARAM_INVALID.getHttpStatus())
+                .body(Result.fail(ErrorCode.PARAM_INVALID, msg));
+    }
+
+    /**
+     * 上传文件超过 multipart 上限 → 40001（D3-05）。
+     *
+     * <p>§8.9「单文件 ≤10MB」+ 错误码表「长度超限」归 {@code 40001}。
+     * 该异常由容器在 <b>multipart 解析阶段</b>抛出，早于业务层校验，所以必须在这里兜住；
+     * 否则会落到 {@link #handleUnexpected} 被误报成 {@code 50000} 系统错误。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        long max = ex.getMaxUploadSize();
+        String msg = max > 0
+                ? "上传文件过大，单文件不得超过 " + (max / 1024 / 1024) + "MB"
+                : "上传文件过大";
+        log.warn("[上传超限] maxUploadSize={} bytes", max);
         return ResponseEntity.status(ErrorCode.PARAM_INVALID.getHttpStatus())
                 .body(Result.fail(ErrorCode.PARAM_INVALID, msg));
     }

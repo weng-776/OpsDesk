@@ -3,6 +3,7 @@ package com.opsdesk.common.utils;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -66,7 +67,10 @@ public final class FileTypeValidator {
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "application/zip", "application/x-zip-compressed", "application/octet-stream"));
 
-        return Map.copyOf(map);
+        // 注意：不能用 Map.copyOf(map) —— 它返回 ImmutableCollections.MapN，
+        // 迭代顺序按哈希桶散列，会丢掉 LinkedHashMap 的插入顺序（whitelistText() 就乱了）。
+        // Collections.unmodifiableMap 保留原 Map 的迭代顺序。
+        return Collections.unmodifiableMap(map);
     }
 
     /**
