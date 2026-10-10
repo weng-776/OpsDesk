@@ -11,6 +11,7 @@ import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.sla.service.SlaPauseService;
 import com.opsdesk.sla.service.TicketSlaCalculator;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
+import com.opsdesk.ticket.dto.TicketCancelDTO;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.mapper.TicketMapper;
 import com.opsdesk.ticket.service.TicketFlowService;
@@ -284,6 +285,40 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         // ⚠️ §7.3：只走到 REOPENED 为止，**绝不**顺手推到 IN_PROGRESS
         //    （要进 IN_PROGRESS 必须由处理人再调一次 start，矩阵 #13）
         apply(ticket, transition, user, "驳回（未解决）", patch);
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    // ==================== 矩阵 #4 / #7 cancel、#14 force-close（D4-05）====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO cancel(Long ticketId, TicketCancelDTO dto) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.CANCEL, user);
+
+        // 矩阵 #4/#7：写 cancel_reason（必填，DTO 上已 @NotBlank 拦过）
+        apply(ticket, transition, user, "撤销：" + dto.getReason(),
+                TicketStatePatch.builder().cancelReason(dto.getReason()).build());
+        return ticketQueryService.detailForFlow(ticketId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO forceClose(Long ticketId) {
+        UserContext.CurrentUser user = UserContext.get();
+        Ticket ticket = loadVisibleTicket(ticketId);
+
+        TicketStateMachine.Transition transition =
+                stateMachine.check(ticket, TicketHistoryAction.FORCE_CLOSE, user);
+
+        // 矩阵 #14 / §6.4：只写 closed_at。
+        // ⚠️ 刻意不碰 SLA —— §6.4 的原文只有「写 closed_at」，
+        //    与 #11 close（员工正常确认，会恢复 SLA）不是一回事。
+        apply(ticket, transition, user, "管理员强制关闭",
+                TicketStatePatch.builder().closedAt(LocalDateTime.now()).build());
         return ticketQueryService.detailForFlow(ticketId);
     }
 

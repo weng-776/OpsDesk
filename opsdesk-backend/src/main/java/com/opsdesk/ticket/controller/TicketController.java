@@ -6,12 +6,14 @@ import com.opsdesk.common.Result;
 import com.opsdesk.common.constant.PermissionCodes;
 import com.opsdesk.ticket.dto.CommentCreateDTO;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
+import com.opsdesk.ticket.dto.TicketCancelDTO;
 import com.opsdesk.ticket.dto.TicketCreateDTO;
 import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.service.AttachmentService;
 import com.opsdesk.ticket.service.TicketCommentBizService;
 import com.opsdesk.ticket.service.TicketCreateService;
 import com.opsdesk.ticket.service.TicketFlowService;
+import com.opsdesk.ticket.service.TicketHistoryBizService;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.support.IdempotencyGuard;
 import com.opsdesk.ticket.vo.AttachmentUploadVO;
@@ -19,6 +21,7 @@ import com.opsdesk.ticket.vo.AttachmentVO;
 import com.opsdesk.ticket.vo.TicketCommentVO;
 import com.opsdesk.ticket.vo.TicketCreatedVO;
 import com.opsdesk.ticket.vo.TicketDetailVO;
+import com.opsdesk.ticket.vo.TicketHistoryVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -55,17 +58,20 @@ public class TicketController {
     private final TicketCommentBizService ticketCommentBizService;
     private final AttachmentService attachmentService;
     private final TicketFlowService ticketFlowService;
+    private final TicketHistoryBizService ticketHistoryBizService;
 
     public TicketController(TicketCreateService ticketCreateService,
                             TicketQueryService ticketQueryService,
                             TicketCommentBizService ticketCommentBizService,
                             AttachmentService attachmentService,
-                            TicketFlowService ticketFlowService) {
+                            TicketFlowService ticketFlowService,
+                            TicketHistoryBizService ticketHistoryBizService) {
         this.ticketCreateService = ticketCreateService;
         this.ticketQueryService = ticketQueryService;
         this.ticketCommentBizService = ticketCommentBizService;
         this.attachmentService = attachmentService;
         this.ticketFlowService = ticketFlowService;
+        this.ticketHistoryBizService = ticketHistoryBizService;
     }
 
     /**
@@ -153,7 +159,7 @@ public class TicketController {
         return Result.ok(ticketCommentBizService.add(id, dto));
     }
 
-    // ==================== 状态流转（D4-01 ~ D4-04，§8.12 / 规格基线 §7.2） ====================
+    // ==================== 状态流转（D4-01 ~ D4-05，§8.12 / 规格基线 §7.2） ====================
 
     /**
      * 分派工单（§8.12 #1，矩阵 #2）：{@code OPEN → ASSIGNED}。
@@ -273,6 +279,46 @@ public class TicketController {
     @PostMapping("/{id}/reject")
     public Result<TicketDetailVO> reject(@PathVariable Long id) {
         return Result.ok(ticketFlowService.reject(id));
+    }
+
+    /**
+     * 撤销工单（§8.12 #10，矩阵 #4 / #7）：{@code OPEN} / {@code ASSIGNED} → {@code CANCELLED}。
+     *
+     * <p>权限 {@code ticket:cancel}；<b>创建人或 ADMIN</b>。
+     * 请求体 {@code { "reason": "问题已自行解决" }} —— <b>reason 必填</b>（不带 → {@code 40001}）。
+     */
+    @RequirePermission(PermissionCodes.TICKET_CANCEL)
+    @PostMapping("/{id}/cancel")
+    public Result<TicketDetailVO> cancel(@PathVariable Long id,
+                                         @Valid @RequestBody TicketCancelDTO dto) {
+        return Result.ok(ticketFlowService.cancel(id, dto));
+    }
+
+    /**
+     * 强制关闭（§8.12 #11，矩阵 #14）：任意非终态 → {@code CLOSED}。
+     *
+     * <p>权限 {@code ticket:close}；<b>仅 ADMIN</b>（EMPLOYEE / AGENT → {@code 40300}）。无请求体。
+     *
+     * <p>⚠️ 终态工单不可强制关闭 —— 状态机表里没有入边，天然 {@code 40900}。
+     */
+    @RequirePermission(PermissionCodes.TICKET_CLOSE)
+    @PostMapping("/{id}/force-close")
+    public Result<TicketDetailVO> forceClose(@PathVariable Long id) {
+        return Result.ok(ticketFlowService.forceClose(id));
+    }
+
+    /**
+     * 工单历史（§8.5）—— {@code TicketHistoryVO[]}，按时间升序，<b>不分页</b>。
+     *
+     * <p>鉴权用 {@code ticket:detail}：历史是「看这张工单」的一部分，与详情同权限。
+     * 数据范围先校验（不可见 {@code 40301}，不存在 {@code 40400}）。
+     *
+     * <p>⚠️ 路径 {@code /{id}/history} 比 {@code /{id}} 多一段，不会与详情冲突。
+     */
+    @RequirePermission(PermissionCodes.TICKET_DETAIL)
+    @GetMapping("/{id}/history")
+    public Result<List<TicketHistoryVO>> history(@PathVariable Long id) {
+        return Result.ok(ticketHistoryBizService.list(id));
     }
 
     // ==================== 附件（D3-05，§8.9 / §8.10） ====================

@@ -23,7 +23,10 @@ import java.util.Set;
  * API 文档 §8.12。
  *
  * <p>已登记：D4-01 的 #2 assign / #3 accept / #5 start；D4-02 的 #6 transfer；
- * D4-03 的 #8 hold / #9 resume；D4-04 的 #10 resolve / #11 close / #12 reject / #13 start(REOPENED)。
+ * D4-03 的 #8 hold / #9 resume；D4-04 的 #10 resolve / #11 close / #12 reject / #13 start(REOPENED)；
+ * D4-05 的 #4 / #7 cancel、#14 force-close。
+ *
+ * <p><b>§7.2 矩阵 15 行已全部登记完毕</b>（#1 create 由 D3-01 的建单直接落 {@code OPEN}，不走本表）。
  *
  * <h2>为什么是「判定表」而不是 if-else</h2>
  * §7.2 是一张 15 行的表。写成 if-else 链会有两个后果：
@@ -60,6 +63,9 @@ public class TicketStateMachine {
 
     /** §7.2「允许角色」列：AGENT / ADMIN */
     private static final Set<Role> AGENT_OR_ADMIN = Set.of(Role.AGENT, Role.ADMIN);
+
+    /** §7.2「允许角色」列：仅 ADMIN（矩阵 #14 force-close） */
+    private static final Set<Role> ADMIN_ONLY = Set.of(Role.ADMIN);
 
     /**
      * 「不限角色」—— 只靠身份（是不是创建人）判定。
@@ -124,11 +130,12 @@ public class TicketStateMachine {
     }
 
     /**
-     * §7.2 矩阵登记表 —— 已登记 #2 / #3 / #5 / #6 / #8 / #9 / #10 / #11 / #12 / #13。
+     * §7.2 矩阵登记表 —— <b>15 行已全部登记</b>（#1 create 不走本表，由建单直接落 {@code OPEN}）。
      *
-     * <p>D4-05 会继续追加（#4 / #7 cancel、#14 force-close）。
-     * 索引 key 是 {@code (from, action)}，所以同一个 {@code start} 天然支持两个来源状态
-     * （#5 {@code ASSIGNED} 与 #13 {@code REOPENED}）—— 这也是 D4-04 只需加一行就能支持 reopen 的原因。
+     * <p>索引 key 是 {@code (from, action)}，所以同一个 action 天然支持多个来源状态：
+     * {@code start} 有两个来源（#5 {@code ASSIGNED}、#13 {@code REOPENED}），
+     * {@code cancel} 有两个（#4 {@code OPEN}、#7 {@code ASSIGNED}），
+     * {@code force-close} 有六个（#14 的全部非终态）。
      */
     private static final List<Transition> TRANSITIONS = List.of(
             // #2 OPEN --assign--> ASSIGNED：需 ticket:assign，可指定 assignee_id
@@ -170,7 +177,32 @@ public class TicketStateMachine {
             //     ⚠️ stampsFirstResponse = true 但**不会覆盖**已有值 ——
             //        apply() 只在 firstResponseAt 为空时才传，§9.6 要求「保留首轮值」
             new Transition(TicketStatus.REOPENED, TicketHistoryAction.START, TicketStatus.IN_PROGRESS,
-                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, true)
+                    AGENT_OR_ADMIN, Precondition.ASSIGNEE_OR_ADMIN, true),
+
+            // #4 OPEN --cancel--> CANCELLED：创建人 / ADMIN，必填 cancel_reason
+            new Transition(TicketStatus.OPEN, TicketHistoryAction.CANCEL, TicketStatus.CANCELLED,
+                    ANY_ROLE, Precondition.CREATOR_OR_ADMIN, false),
+            // #7 ASSIGNED --cancel--> CANCELLED：同上
+            new Transition(TicketStatus.ASSIGNED, TicketHistoryAction.CANCEL, TicketStatus.CANCELLED,
+                    ANY_ROLE, Precondition.CREATOR_OR_ADMIN, false),
+
+            // #14 任意非终态 --force-close--> CLOSED：**仅 ADMIN**
+            //     ⚠️ 逐个非终态登记（6 条）而不是写「通配」——
+            //        表驱动下「终态不可 force-close」因此是**结构性**的：
+            //        CLOSED / CANCELLED 没有任何入边，天然拒绝（矩阵 #15）
+            //     ⚠️ 不做取消原因之类的附加校验：§6.4 只说「管理员可对任意非终态强制关闭 + 写 closed_at」
+            new Transition(TicketStatus.OPEN, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false),
+            new Transition(TicketStatus.ASSIGNED, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false),
+            new Transition(TicketStatus.IN_PROGRESS, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false),
+            new Transition(TicketStatus.WAITING_USER, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false),
+            new Transition(TicketStatus.WAITING_CONFIRM, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false),
+            new Transition(TicketStatus.REOPENED, TicketHistoryAction.FORCE_CLOSE, TicketStatus.CLOSED,
+                    ADMIN_ONLY, Precondition.NONE, false)
     );
 
     /**

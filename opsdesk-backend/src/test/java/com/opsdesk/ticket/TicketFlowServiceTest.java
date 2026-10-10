@@ -712,11 +712,109 @@ class TicketFlowServiceTest {
                 .as("可见但不是处理人 → 40301").isEqualTo(ErrorCode.DATA_SCOPE_DENIED);
     }
 
+    // ==================== D4-05 撤销 / 强制关闭（矩阵 #4 / #7 / #14）====================
+
+    @Test
+    @DisplayName("D4-05 验收1（矩阵 #4）：OPEN 工单 cancel → CANCELLED 且写 cancel_reason")
+    void 撤销OPEN工单写原因() {
+        // 工单 1 是 OPEN，创建人 = emp_wang(4)
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        TicketDetailVO cancelled = ticketFlowService.cancel(1L, cancelDto("问题已自行解决"));
+
+        assertThat(cancelled.getStatus()).isEqualTo(TicketStatus.CANCELLED);
+        assertThat(ticketService.getById(1L).getCancelReason()).isEqualTo("问题已自行解决");
+    }
+
+    @Test
+    @DisplayName("D4-05 验收1（矩阵 #7）：ASSIGNED 工单 cancel → CANCELLED")
+    void 撤销ASSIGNED工单() {
+        // 种子数据里唯一的 OPEN 工单是工单 1，所以先把它分派掉再撤销
+        setCurrentUser(ADMIN, Role.ADMIN);
+        TicketDetailVO assigned = ticketFlowService.assign(1L, assignDto(AGENT_ZHANG));
+        assertThat(assigned.getStatus()).isEqualTo(TicketStatus.ASSIGNED);
+
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        TicketDetailVO cancelled = ticketFlowService.cancel(1L, cancelDto("重复提单"));
+        assertThat(cancelled.getStatus()).isEqualTo(TicketStatus.CANCELLED);
+        assertThat(ticketService.getById(1L).getCancelReason()).isEqualTo("重复提单");
+    }
+
+    @Test
+    @DisplayName("D4-05：cancel 写 action=CANCEL 的历史")
+    void 撤销写历史() {
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        ticketFlowService.cancel(1L, cancelDto("不修了"));
+
+        List<java.util.Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT from_status, to_status, remark FROM ticket_history "
+                        + "WHERE ticket_id = 1 AND action = 'CANCEL'");
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).get("from_status")).isEqualTo("OPEN");
+        assertThat(rows.get(0).get("to_status")).isEqualTo("CANCELLED");
+        assertThat((String) rows.get(0).get("remark")).as("历史备注带原因").contains("不修了");
+    }
+
+    @Test
+    @DisplayName("D4-05：cancel 只能从 OPEN / ASSIGNED（IN_PROGRESS → 40900）；非 creator → 40300")
+    void 撤销的状态前置与创建人约束() {
+        // 工单 2 是 IN_PROGRESS —— 矩阵 #4/#7 只登记了 OPEN / ASSIGNED
+        setCurrentUser(ADMIN, Role.ADMIN);
+        assertThat(catchBiz(() -> ticketFlowService.cancel(2L, cancelDto("想撤"))))
+                .as("IN_PROGRESS 不能撤销").isEqualTo(ErrorCode.CONFLICT);
+
+        // 工单 1 的创建人是 emp_wang(4)；agent_zhang 能看见它（公共池）但不是创建人
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.cancel(1L, cancelDto("想撤"))))
+                .as("非 creator → 40300").isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    @DisplayName("D4-05 验收2：force-close 仅 ADMIN（EMPLOYEE / AGENT → 40300）")
+    void 强制关闭仅管理员() {
+        // 工单 1 是 OPEN；emp_wang 是创建人且能看见它，但角色不是 ADMIN
+        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
+        assertThat(catchBiz(() -> ticketFlowService.forceClose(1L)))
+                .as("EMPLOYEE → 40300").isEqualTo(ErrorCode.FORBIDDEN);
+
+        setCurrentUser(AGENT_ZHANG, Role.AGENT);
+        assertThat(catchBiz(() -> ticketFlowService.forceClose(1L)))
+                .as("AGENT → 40300").isEqualTo(ErrorCode.FORBIDDEN);
+
+        // ADMIN 可以
+        setCurrentUser(ADMIN, Role.ADMIN);
+        TicketDetailVO vo = ticketFlowService.forceClose(1L);
+        assertThat(vo.getStatus()).isEqualTo(TicketStatus.CLOSED);
+        assertThat(vo.getClosedAt()).as("§6.4：写 closed_at").isNotNull();
+    }
+
+    @Test
+    @DisplayName("D4-05：force-close 对任意非终态可用；对终态 → 40900（矩阵 #15）")
+    void 强制关闭的来源状态() {
+        setCurrentUser(ADMIN, Role.ADMIN);
+
+        // 任意非终态都行：IN_PROGRESS 的工单 2
+        assertThat(ticketFlowService.forceClose(2L).getStatus()).isEqualTo(TicketStatus.CLOSED);
+
+        // 终态：工单 4 是 CLOSED
+        assertThat(catchBiz(() -> ticketFlowService.forceClose(4L)))
+                .as("CLOSED 是终态 → 40900").isEqualTo(ErrorCode.CONFLICT);
+        // 工单 1 先撤销再强关 → 同样被拒
+        ticketFlowService.cancel(1L, cancelDto("先撤销"));
+        assertThat(catchBiz(() -> ticketFlowService.forceClose(1L)))
+                .as("CANCELLED 是终态 → 40900").isEqualTo(ErrorCode.CONFLICT);
+    }
+
     // ==================== 工具 ====================
 
     private TicketAssignDTO assignDto(Long assigneeId) {
         TicketAssignDTO dto = new TicketAssignDTO();
         dto.setAssigneeId(assigneeId);
+        return dto;
+    }
+
+    private com.opsdesk.ticket.dto.TicketCancelDTO cancelDto(String reason) {
+        var dto = new com.opsdesk.ticket.dto.TicketCancelDTO();
+        dto.setReason(reason);
         return dto;
     }
 

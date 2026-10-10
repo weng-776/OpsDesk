@@ -77,6 +77,11 @@ public class TicketStatePatch {
     /** 超时提醒标志（reject 归零，§9.6） */
     private Integer slaBreachNotified;
 
+    // ---------- D4-05：撤销 ----------
+
+    /** 撤销原因（cancel，**必填**） */
+    private String cancelReason;
+
     /** 空补丁：什么都不改（理论上用不到，留作显式表达） */
     public static TicketStatePatch none() {
         return TicketStatePatch.builder().build();

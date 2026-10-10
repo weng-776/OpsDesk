@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  工单历史 Mapper XML（工单 D4-05）
+
+  规格依据：API 文档 §8.5（工单历史）/ §16.9（TicketHistoryVO）
+
+  ⚠️ 为什么这里要写 XML，而不是先查 history 再 listByIds 查 user：
+    历史要显示 operatorName，它在 `user` 表里。可选做法：
+      ① 先查历史、再 listByIds 批量查 user → 多一次往返，且是「Java 侧 JOIN」
+      ② wrapper.apply("LEFT JOIN user ...") → 撞 SOP §5 红区「手写 SQL 拼接」
+      ③ XML 里写完整的、参数化的 JOIN → 本文件的做法
+    选 ③：SQL 静态、参数用 #{}（无注入面），JOIN 交给 MySQL 做。
+
+  ⚠️ 参数写法都用 #{}，绝不用 ${}。
+-->
+
+<mapper namespace="com.opsdesk.ticket.mapper.TicketHistoryMapper">
+
+    <!--
+      按工单查历史（含操作人姓名）。
+
+      排序：created_at ASC + id ASC。
+        · §8.5 要求「按时间升序」
+        · id 是 tiebreaker —— created_at 精度到秒，同一秒写入的多条历史
+          （如建单时同事务写 history）若只按它排序，顺序不稳定。
+          ⚠️ 注意与列表接口相反：列表是 created_at DESC（新的在前），历史是 ASC（按发生顺序读）
+
+      COALESCE(u.nickname, u.username)：昵称优先，无昵称回落用户名 ——
+      与 D3-02 列表 / D3-04 评论 / D3-05 附件列表的显示名口径一致（四处必须同规则）。
+
+      LEFT JOIN：operator 理论上不会缺失（operator_id NOT NULL），
+      但用户被物理删除后 LEFT JOIN 让历史仍能列出（operatorName 为 null），
+      而不是整条历史消失 —— 历史是审计性质的数据，绝不能因关联行没了就查不到。
+    -->
+    <select id="selectByTicketIdWithOperator"
+            resultType="com.opsdesk.ticket.vo.TicketHistoryVO">
+        SELECT h.id            AS id,
+               h.operator_id   AS operatorId,
+               COALESCE(u.nickname, u.username) AS operatorName,
+               h.action        AS action,
+               h.from_status   AS fromStatus,
+               h.to_status     AS toStatus,
+               h.remark        AS remark,
+               h.created_at    AS createdAt
+        FROM ticket_history h
+                 LEFT JOIN `user` u ON u.id = h.operator_id
+        WHERE h.ticket_id = #{ticketId}
+        ORDER BY h.created_at ASC, h.id ASC
+    </select>
+
+</mapper>

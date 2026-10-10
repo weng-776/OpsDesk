@@ -70,6 +70,7 @@
         · resolve ：sla_paused_at = now + resolved_at = now
         · close   ：同 resume 的 SLA 恢复 + closed_at = now
         · reject  ：清空暂停 + 新一轮 resolution_deadline + 重置 SLA 状态/标志位 + reopen_count++
+        · cancel  ：cancel_reason = 撤销原因
 
       附加列全部走 TicketStatePatch（null = 不写，保持原值）。
       ⚠️ clearSlaPausedAt 是必需的：<if test="x != null"> 表达不了「置 NULL」。
@@ -93,6 +94,7 @@
         <if test="patch.slaResolutionState != null">, sla_resolution_state = #{patch.slaResolutionState}</if>
         <if test="patch.slaWarningNotified != null">, sla_warning_notified = #{patch.slaWarningNotified}</if>
         <if test="patch.slaBreachNotified != null">, sla_breach_notified = #{patch.slaBreachNotified}</if>
+        <if test="patch.cancelReason != null">, cancel_reason = #{patch.cancelReason}</if>
         <include refid="casWhere"/>
     </update>
 

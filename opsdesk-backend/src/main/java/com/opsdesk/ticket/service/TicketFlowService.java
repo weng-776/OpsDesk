@@ -1,6 +1,7 @@
 package com.opsdesk.ticket.service;
 
 import com.opsdesk.ticket.dto.TicketAssignDTO;
+import com.opsdesk.ticket.dto.TicketCancelDTO;
 import com.opsdesk.ticket.vo.TicketDetailVO;
 
 /**
@@ -145,4 +146,37 @@ public interface TicketFlowService {
      * @return 流转后的工单快照（状态为 {@code REOPENED}）
      */
     TicketDetailVO reject(Long ticketId);
+
+    /**
+     * 撤销工单（矩阵 #4 / #7）：{@code OPEN} 或 {@code ASSIGNED} → {@code CANCELLED}。
+     *
+     * <p>权限：{@code ticket:cancel}；<b>创建人或 ADMIN</b>。仅这两种来源状态
+     * —— {@code IN_PROGRESS} 及之后不能撤销（矩阵 #4/#7 只登记了 OPEN / ASSIGNED）。
+     *
+     * <p>副作用：写 {@code cancel_reason}（<b>必填</b>，由 DTO 的 {@code @NotBlank} 保证）。
+     *
+     * <p>⚠️ 不做 SLA 处理：{@code CANCELLED} 是终态，已停止计时；且来源状态
+     * （{@code OPEN} / {@code ASSIGNED}）本来就不是暂停态。
+     *
+     * @param dto 含必填的 {@code reason}
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO cancel(Long ticketId, TicketCancelDTO dto);
+
+    /**
+     * 强制关闭（矩阵 #14）：<b>任意非终态</b> → {@code CLOSED}，仅 ADMIN。
+     *
+     * <p>权限：{@code ticket:close}；角色 <b>仅 ADMIN</b>（EMPLOYEE / AGENT → {@code 40300}）。
+     *
+     * <p>副作用：写 {@code closed_at}（§6.4）。
+     *
+     * <p>⚠️ 终态不可强制关闭：{@code CLOSED} / {@code CANCELLED} 在状态机表里没有入边，
+     * 天然 {@code 40900}（矩阵 #15）。
+     *
+     * <p>⚠️ 按 §6.4 原文，本操作<b>只写 closed_at、不动 SLA</b>（与 {@link #close} 不同 ——
+     * {@code close} 是员工正常确认，会恢复 SLA；{@code force-close} 是管理员兜底覆盖）。
+     *
+     * @return 流转后的工单快照
+     */
+    TicketDetailVO forceClose(Long ticketId);
 }
