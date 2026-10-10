@@ -133,6 +133,7 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
     @Transactional(rollbackFor = Exception.class)
     public Long create(DepartmentCreateDTO dto) {
         Long parentId = dto.getParentId();
+        //取父部门
         Department parent = parentId == ROOT_PARENT_ID ? null : requireParent(parentId);
 
         Department department = new Department();
