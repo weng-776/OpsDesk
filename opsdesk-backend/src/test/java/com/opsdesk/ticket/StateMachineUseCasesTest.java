@@ -8,6 +8,7 @@ import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketFlowService;
 import com.opsdesk.ticket.service.TicketService;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -70,6 +71,20 @@ class StateMachineUseCasesTest {
     /** 工单 3 的原始快照（用例 #4 用） */
     private Map<String, Object> waitingConfirmSnapshot;
 
+    /**
+     * 跑用例前的 {@code audit_log} 最大 id。
+     *
+     * <p>本类不带事务，流转写下的审计行会真提交 —— {@code @AfterEach} 用这个基线把
+     * 「本次跑出来的行」整段删掉，同时**绝不碰种子审计数据**。
+     */
+    private Long auditIdBaseline;
+
+    @BeforeEach
+    void captureAuditBaseline() {
+        auditIdBaseline = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(id), 0) FROM audit_log", Long.class);
+    }
+
     @AfterEach
     void restore() {
         UserContext.clear();
@@ -100,6 +115,17 @@ class StateMachineUseCasesTest {
             jdbcTemplate.update("DELETE FROM ticket_history WHERE ticket_id = ? AND action = 'REJECT'",
                     TICKET_WAITING_CONFIRM);
             waitingConfirmSnapshot = null;
+        }
+
+        // ⚠️ D6-01 起，流转会写审计（@AuditLog）。本类**不带事务**（用例 #2 要真并发），
+        //    所以那些审计行是**真提交**的 —— 不清理会在 audit_log 里留 residue，
+        //    让后续依赖审计表的断言假红。与上面删 ticket_history 是同一个道理。
+        //    ⚠️ 按「审计 id 基线」删，而不是按 resource_id / user_id 删：
+        //       audit_log 有种子数据，且种子里 `resource_id = 3` 恰好是 `user_id = 3` 的行，
+        //       按用户过滤会误删种子。id 基线对种子永远安全。
+        if (auditIdBaseline != null) {
+            jdbcTemplate.update("DELETE FROM audit_log WHERE id > ?", auditIdBaseline);
+            auditIdBaseline = null;
         }
     }
 

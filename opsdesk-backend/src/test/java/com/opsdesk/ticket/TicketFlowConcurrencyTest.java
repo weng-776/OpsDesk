@@ -6,6 +6,7 @@ import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.ticket.service.TicketFlowService;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,25 +54,49 @@ class TicketFlowConcurrencyTest {
     /** 原 department_id，用于还原 */
     private Long originalDeptId;
 
+    /**
+     * 跑用例前的 {@code audit_log} 最大 id。
+     *
+     * <p>本类不带事务，流转写下的审计行会真提交 —— {@code @AfterEach} 用这个基线把
+     * 「本次跑出来的行」整段删掉，同时**绝不碰种子审计数据**。
+     */
+    private Long auditIdBaseline;
+
+    @BeforeEach
+    void captureAuditBaseline() {
+        auditIdBaseline = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(id), 0) FROM audit_log", Long.class);
+    }
+
     @AfterEach
     void restore() {
         UserContext.clear();
-        if (before == null) {
-            return;
+
+        if (before != null) {
+            jdbcTemplate.update(
+                    "UPDATE ticket SET status = ?, assignee_id = ?, first_response_at = ?, version = ? WHERE id = ?",
+                    before.get("status"), before.get("assignee_id"),
+                    before.get("first_response_at"), before.get("version"), TICKET_ID);
+            if (originalDeptId != null) {
+                jdbcTemplate.update("UPDATE ticket SET department_id = ? WHERE id = ?",
+                        originalDeptId, TICKET_ID);
+            }
+            jdbcTemplate.update(
+                    "DELETE FROM ticket_history WHERE ticket_id = ? AND action = 'ACCEPT' AND operator_id IN (?, ?)",
+                    TICKET_ID, AGENT_ZHANG, AGENT_LI);
+            before = null;
+            originalDeptId = null;
         }
-        jdbcTemplate.update(
-                "UPDATE ticket SET status = ?, assignee_id = ?, first_response_at = ?, version = ? WHERE id = ?",
-                before.get("status"), before.get("assignee_id"),
-                before.get("first_response_at"), before.get("version"), TICKET_ID);
-        if (originalDeptId != null) {
-            jdbcTemplate.update("UPDATE ticket SET department_id = ? WHERE id = ?",
-                    originalDeptId, TICKET_ID);
+
+        // ⚠️ D6-01 起，流转会写审计（@AuditLog）。本类**不带事务**，所以那行审计是**真提交**的 ——
+        //    不清理会在 audit_log 里留下 residue，让后续依赖审计表的断言假红。
+        //    与上面删 ticket_history 是同一个道理。
+        //    用「审计 id 基线」而不是按 resource_id / user_id 过滤：audit_log 有种子数据，
+        //    按字段过滤迟早误删种子（id 基线对种子永远安全）。
+        if (auditIdBaseline != null) {
+            jdbcTemplate.update("DELETE FROM audit_log WHERE id > ?", auditIdBaseline);
+            auditIdBaseline = null;
         }
-        jdbcTemplate.update(
-                "DELETE FROM ticket_history WHERE ticket_id = ? AND action = 'ACCEPT' AND operator_id IN (?, ?)",
-                TICKET_ID, AGENT_ZHANG, AGENT_LI);
-        before = null;
-        originalDeptId = null;
     }
 
     @Test

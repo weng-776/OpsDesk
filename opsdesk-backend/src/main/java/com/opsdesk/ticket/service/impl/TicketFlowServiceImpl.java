@@ -1,10 +1,13 @@
 package com.opsdesk.ticket.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketHistoryAction;
@@ -103,6 +106,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_ASSIGN, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO assign(Long ticketId, TicketAssignDTO dto) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -120,6 +125,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO accept(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -135,6 +142,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO start(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -150,6 +159,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_TRANSFER, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO transfer(Long ticketId, TicketAssignDTO dto) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -169,6 +180,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO hold(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -183,6 +196,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO resume(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -205,6 +220,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO resolve(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -221,6 +238,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_CLOSE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO close(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -244,6 +263,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_STATUS_CHANGE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO reject(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -292,6 +313,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_CANCEL, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO cancel(Long ticketId, TicketCancelDTO dto) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
@@ -307,6 +330,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_CLOSE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#ticketId")
     public TicketDetailVO forceClose(Long ticketId) {
         UserContext.CurrentUser user = UserContext.get();
         Ticket ticket = loadVisibleTicket(ticketId);
