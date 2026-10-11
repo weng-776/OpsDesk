@@ -73,9 +73,12 @@ class SlaScanServiceTest {
 
     /** 被本类改过的工单快照：{@code id -> 原始列值}，{@code @AfterEach} 原样还原 */
     private final Map<Long, Map<String, Object>> before = new LinkedHashMap<>();
+    private Long notificationIdBaseline;
 
     @BeforeEach
     void snapshotAndNormalize() {
+        notificationIdBaseline = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(id), 0) FROM notification", Long.class);
         // 上一轮若异常退出，锁可能还留着 —— 清掉，否则本轮全被跳过
         redisTemplate.delete(LOCK_KEY);
         before.clear();
@@ -104,6 +107,10 @@ class SlaScanServiceTest {
             restoreRow(entry.getKey(), entry.getValue());
         }
         before.clear();
+        if (notificationIdBaseline != null) {
+            jdbcTemplate.update("DELETE FROM notification WHERE id > ?", notificationIdBaseline);
+            notificationIdBaseline = null;
+        }
         redisTemplate.delete(LOCK_KEY);
     }
 
@@ -122,6 +129,9 @@ class SlaScanServiceTest {
         assertThat(warningFlag(ticketId)).as("§9.5：到达 WARNING 置 sla_warning_notified = 1")
                 .isEqualTo(1);
         assertThat(resolutionState(ticketId)).isEqualTo("WARNING");
+        assertThat(notificationCountSinceBaseline(ticketId, "SLA_WARNING"))
+                .as("D6-04：预警标志置位的同一事务写出一条真实通知")
+                .isEqualTo(1);
 
         // ⭐ 第二轮：锁已释放，所以这一轮是真跑的 —— 挡住的只能是幂等标志位
         SlaScanService.ScanResult second = slaScanService.scan();
@@ -131,6 +141,8 @@ class SlaScanServiceTest {
                 .as("第二轮：标志位挡住，不重复发通知").isZero();
         assertThat(warningFlag(ticketId)).as("标志位保持 1（扫描绝不清零）").isEqualTo(1);
         assertThat(resolutionState(ticketId)).as("状态没变 → 第二轮不写库").isEqualTo("WARNING");
+        assertThat(notificationCountSinceBaseline(ticketId, "SLA_WARNING"))
+                .as("重复扫描不能重复插入通知").isEqualTo(1);
     }
 
     // ==================== 验收 2：BREACHED 通知与状态落库 ====================
@@ -149,6 +161,9 @@ class SlaScanServiceTest {
         assertThat(resolutionState(ticketId)).isEqualTo("BREACHED");
         assertThat(warningFlag(ticketId))
                 .as("按 §9.5 字面：BREACHED 只置 breach 标志，不补置 warning 标志").isZero();
+        assertThat(notificationCountSinceBaseline(ticketId, "SLA_BREACHED"))
+                .as("D6-04：超时标志置位的同一事务写出一条真实通知")
+                .isEqualTo(1);
 
         assertThat(slaScanService.scan().breachNotified())
                 .as("第二轮不重复发").isZero();
@@ -244,6 +259,14 @@ class SlaScanServiceTest {
         LocalDateTime deadline = LocalDateTime.now().plusMinutes(Math.max(1, minutes / 10));
         jdbcTemplate.update("UPDATE ticket SET resolution_deadline = ? WHERE id = ?",
                 Timestamp.valueOf(deadline), ticketId);
+    }
+
+    private int notificationCountSinceBaseline(long ticketId, String type) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM notification WHERE id > ? AND biz_type = 'TICKET' "
+                        + "AND biz_id = ? AND type = ?",
+                Integer.class, notificationIdBaseline, ticketId, type);
+        return count == null ? 0 : count;
     }
 
     private int warningFlag(long ticketId) {

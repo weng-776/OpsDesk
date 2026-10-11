@@ -38,6 +38,17 @@ public interface AuditRecordService {
     String snapshot(AuditResourceType resourceType, Long resourceId);
 
     /**
+     * 是否已有同资源、同操作码的审计行（只用于注解显式开启的幂等创建）。
+     *
+     * @param operation 操作码
+     * @param resourceType 资源类型
+     * @param resourceId 资源 id
+     * @return 已存在则 {@code true}
+     */
+    boolean exists(com.opsdesk.common.enums.AuditOperation operation,
+                   AuditResourceType resourceType, Long resourceId);
+
+    /**
      * 落一条审计。
      *
      * <p>⚠️ <b>不吞异常</b>：写入失败直接向上抛，让业务事务一起回滚 ——

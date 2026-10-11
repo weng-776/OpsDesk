@@ -1,8 +1,11 @@
 package com.opsdesk.organization.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.datascope.DepartmentScopeHelper;
 import com.opsdesk.organization.dto.DepartmentCreateDTO;
 import com.opsdesk.organization.dto.DepartmentUpdateDTO;
@@ -131,6 +134,8 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.DEPARTMENT_CREATE, resourceType = AuditResourceType.DEPARTMENT,
+            resourceId = "#result")
     public Long create(DepartmentCreateDTO dto) {
         Long parentId = dto.getParentId();
         //取父部门
@@ -162,6 +167,8 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.DEPARTMENT_UPDATE, resourceType = AuditResourceType.DEPARTMENT,
+            resourceId = "#id")
     public void update(Long id, DepartmentUpdateDTO dto) {
         Department self = requireDepartment(id);
         Long newParentId = dto.getParentId();
@@ -241,6 +248,8 @@ public class DepartmentManageServiceImpl implements DepartmentManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.DEPARTMENT_DELETE, resourceType = AuditResourceType.DEPARTMENT,
+            resourceId = "#id")
     public void delete(Long id) {
         requireDepartment(id);
 

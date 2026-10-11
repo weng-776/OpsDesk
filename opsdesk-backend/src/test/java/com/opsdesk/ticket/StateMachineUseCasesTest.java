@@ -74,15 +74,18 @@ class StateMachineUseCasesTest {
     /**
      * 跑用例前的 {@code audit_log} 最大 id。
      *
-     * <p>本类不带事务，流转写下的审计行会真提交 —— {@code @AfterEach} 用这个基线把
-     * 「本次跑出来的行」整段删掉，同时**绝不碰种子审计数据**。
+     * <p>本类不带事务，流转写下的审计行与通知都会真提交 —— {@code @AfterEach} 用 id 基线
+     * 删除本次产物，同时不碰种子行。
      */
     private Long auditIdBaseline;
+    private Long notificationIdBaseline;
 
     @BeforeEach
     void captureAuditBaseline() {
         auditIdBaseline = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(MAX(id), 0) FROM audit_log", Long.class);
+        notificationIdBaseline = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(id), 0) FROM notification", Long.class);
     }
 
     @AfterEach
@@ -126,6 +129,10 @@ class StateMachineUseCasesTest {
         if (auditIdBaseline != null) {
             jdbcTemplate.update("DELETE FROM audit_log WHERE id > ?", auditIdBaseline);
             auditIdBaseline = null;
+        }
+        if (notificationIdBaseline != null) {
+            jdbcTemplate.update("DELETE FROM notification WHERE id > ?", notificationIdBaseline);
+            notificationIdBaseline = null;
         }
     }
 

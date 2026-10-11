@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.opsdesk.common.enums.NotificationType;
 import com.opsdesk.common.enums.SlaState;
+import com.opsdesk.notification.service.NotificationEvent;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.sla.service.SlaCalculator;
 import com.opsdesk.sla.service.SlaScanService;
@@ -14,6 +15,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -99,15 +103,21 @@ public class SlaScanServiceImpl implements SlaScanService {
     private final TicketMapper ticketMapper;
     private final SlaCalculator slaCalculator;
     private final StringRedisTemplate redisTemplate;
+    private final ApplicationEventPublisher eventPublisher;
+    private final TransactionTemplate transactionTemplate;
 
     public SlaScanServiceImpl(TicketService ticketService,
                               TicketMapper ticketMapper,
                               SlaCalculator slaCalculator,
-                              StringRedisTemplate redisTemplate) {
+                              StringRedisTemplate redisTemplate,
+                              ApplicationEventPublisher eventPublisher,
+                              PlatformTransactionManager transactionManager) {
         this.ticketService = ticketService;
         this.ticketMapper = ticketMapper;
         this.slaCalculator = slaCalculator;
         this.redisTemplate = redisTemplate;
+        this.eventPublisher = eventPublisher;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     @Override
@@ -176,7 +186,12 @@ public class SlaScanServiceImpl implements SlaScanService {
                         continue;
                     }
                     try {
-                        Applied applied = applyOne(ticket, outcome);
+                        // 单张工单的派生状态与通知必须同事务：如果 notification insert 失败，
+                        // updateSlaScan 与幂等标志一起回滚，下一轮才能重试通知（§9.5 / D6-04）。
+                        Applied applied = transactionTemplate.execute(status -> applyOne(ticket, outcome));
+                        if (applied == null) {
+                            throw new IllegalStateException("SLA 扫描事务未返回结果");
+                        }
                         if (applied.stateChanged()) {
                             stateChanged++;
                         }
@@ -249,25 +264,26 @@ public class SlaScanServiceImpl implements SlaScanService {
     /**
      * 发 SLA 通知。
      *
-     * <p>⚠️ <b>本单只记日志</b>：通知模块（工单 D6-03）尚未落地 ——
-     * {@code NotificationService} 目前只是 {@code gen_entities.py} 生成的裸 CRUD，
-     * 全项目还没有任何地方写 {@code notification} 表。按工单要求「先只写日志并留 TODO」。
-     *
-     * <p>「只发一次」这件事并不依赖日志：它由 {@code sla_warning_notified} /
-     * {@code sla_breach_notified} 标志位保证，且本轮的新增通知条数由
-     * {@link ScanResult#warningNotified()} / {@link ScanResult#breachNotified()} 返回，可被断言。
+     * <p>本地阶段通过 {@link NotificationEvent} 同步落库；通知标志位先写成功再发事件，
+     * 同一轮后续扫描看到标志为 1 就不会重复通知。Day 9 把监听器换 MQ 消费者时，
+     * 这里的触发模型保持不变。
      */
     private void notifySla(Ticket ticket, NotificationType type,
                            SlaState responseState, SlaState resolutionState) {
-        // TODO(D6-03): 通知模块落地后改为落库 + 推送 ——
-        //   userId 取处理人（未分派则取创建人），title/content 按 NotificationType 模板生成。
-        //   注意：置标志位与发通知必须在同一个事务里（本方法目前只有日志，故无需事务）。
-        log.info("[SLA 通知] type={}({}) ticketId={} ticketNo={} assigneeId={} creatorId={} "
-                        + "responseDeadline={} resolutionDeadline={} responseState={} resolutionState={}",
-                type, type.getLabel(), ticket.getId(), ticket.getTicketNo(),
-                ticket.getAssigneeId(), ticket.getCreatorId(),
-                ticket.getResponseDeadline(), ticket.getResolutionDeadline(),
-                responseState, resolutionState);
+        Long recipientId = ticket.getAssigneeId() != null ? ticket.getAssigneeId() : ticket.getCreatorId();
+        if (recipientId == null) {
+            log.error("[SLA 通知] 没有处理人或创建人，无法确定收件人。type={} ticketId={}", type, ticket.getId());
+            return;
+        }
+        String title = type == NotificationType.SLA_WARNING ? "工单即将超时" : "工单已超时";
+        String content = "工单 " + ticket.getTicketNo() + "「" + ticket.getTitle() + "」"
+                + (type == NotificationType.SLA_WARNING ? "即将达到" : "已超过") + " SLA 时限。"
+                + "响应状态=" + responseState + "，解决状态=" + resolutionState + "。";
+        eventPublisher.publishEvent(new NotificationEvent(recipientId, type, title, content,
+                "TICKET", ticket.getId()));
+
+        log.info("[SLA 通知] 已发布 type={} ticketId={} recipientId={} responseState={} resolutionState={}",
+                type, ticket.getId(), recipientId, responseState, resolutionState);
     }
 
     /** 取一页候选工单（keyset 分页：{@code id > cursor} 升序） */

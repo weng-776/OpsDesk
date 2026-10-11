@@ -1,5 +1,6 @@
 package com.opsdesk.audit.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -104,6 +105,17 @@ public class AuditRecordServiceImpl implements AuditRecordService {
             return null;
         }
         return toJson(data);
+    }
+
+    @Override
+    public boolean exists(AuditOperation operation, AuditResourceType resourceType, Long resourceId) {
+        if (operation == null || resourceType == null || resourceId == null) {
+            return false;
+        }
+        return auditLogService.count(new LambdaQueryWrapper<AuditLog>()
+                .eq(AuditLog::getOperation, operation)
+                .eq(AuditLog::getResourceType, resourceType)
+                .eq(AuditLog::getResourceId, resourceId)) > 0;
     }
 
     @Override

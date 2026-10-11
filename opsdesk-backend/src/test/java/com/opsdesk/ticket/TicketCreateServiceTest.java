@@ -85,6 +85,8 @@ class TicketCreateServiceTest {
     private long ticketIdBaseline;
     private long historyIdBaseline;
     private long outboxIdBaseline;
+    private long auditIdBaseline;
+    private long notificationIdBaseline;
 
     /**
      * 今天的日序列 key 及其原值。
@@ -104,6 +106,8 @@ class TicketCreateServiceTest {
         ticketIdBaseline = maxId("ticket");
         historyIdBaseline = maxId("ticket_history");
         outboxIdBaseline = maxId("event_outbox");
+        auditIdBaseline = maxId("audit_log");
+        notificationIdBaseline = maxId("notification");
         seqKeyToday = TicketNoGenerator.SEQ_KEY_PREFIX + LocalDate.now().format(DATE_PART);
         seqValueBefore = redisTemplate.opsForValue().get(seqKeyToday);
         // 直接构造 CurrentUser（不走拦截器）：本类只测 service，
@@ -118,6 +122,8 @@ class TicketCreateServiceTest {
         // 自造自清：只删本次用例新产生的行（按 id 基线），种子数据一行不动
         jdbcTemplate.update("DELETE FROM ticket_history WHERE id > ?", historyIdBaseline);
         jdbcTemplate.update("DELETE FROM event_outbox WHERE id > ?", outboxIdBaseline);
+        jdbcTemplate.update("DELETE FROM audit_log WHERE id > ?", auditIdBaseline);
+        jdbcTemplate.update("DELETE FROM notification WHERE id > ?", notificationIdBaseline);
         jdbcTemplate.update("DELETE FROM ticket WHERE id > ?", ticketIdBaseline);
         usedIdempotencyKeys.forEach(key ->
                 redisTemplate.delete(IdempotencyGuard.KEY_PREFIX + key));

@@ -1,8 +1,11 @@
 package com.opsdesk.sla.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.TicketPriority;
 import com.opsdesk.sla.dto.SlaPolicyUpdateDTO;
 import com.opsdesk.sla.entity.SlaPolicy;
@@ -91,6 +94,8 @@ public class SlaPolicyManageServiceImpl implements SlaPolicyManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.SLA_POLICY_UPDATE, resourceType = AuditResourceType.SLA_POLICY,
+            resourceId = "#id", afterResourceId = "#result.id")
     public SlaPolicyVO update(Long id, SlaPolicyUpdateDTO dto) {
         // 跨字段约束（§9.3）：解决时限 ≥ 响应时限。放这里而不是 DTO 注解上，见 DTO 注释
         if (dto.getResolutionMinutes() < dto.getResponseMinutes()) {

@@ -63,15 +63,48 @@ public @interface AuditLog {
     /**
      * 资源 id 的 SpEL 表达式，从方法参数解析，例如 {@code "#ticketId"}。
      *
-     * <p>可用变量：参数名（{@code #ticketId}）与位置（{@code #p0} / {@code #a0}）两种写法都支持。
+     * <p>可用变量：参数名（{@code #ticketId}）与位置（{@code #p0} / {@code #a0}）两种写法都支持，
+     * 执行后的表达式还可用 {@code #result}（例如 {@code #result.id}）。
      * 用 {@code SimpleEvaluationContext} 求值 —— 挡掉 {@code T(...)} 与任意方法调用，
      * 所以属性访问要写 {@code #dto.ticketId} 而不是 {@code #dto.getTicketId()}。
      *
      * <p>留空（默认）表示<b>解析不出资源 id</b>：此时 {@code before_data} / {@code after_data}
      * 都为 {@code null}，只记操作码与操作人。
-     * <p>⚠️ 表达式在方法<b>执行前</b>求值，所以「id 由方法内部生成」的创建类操作
-     * （如 {@code TicketCreateService.create}）解析不出来 —— 那类需要 {@code #result} 支持，
-     * 本单不做（见工单 D6-01 的范围）。
+     * <p>执行前求值时，{@code #result} / {@code #result.id} 会按资源未生成处理为 {@code null}；
+     * 执行后会用真实返回值解析。这使创建类操作可以用 {@code resourceId="#result.id"}。
      */
     String resourceId() default "";
+
+    /**
+     * 执行后快照使用的资源 ID 表达式；不填时沿用 {@link #resourceId()}。
+     *
+     * <p>用于「版本化修改」这类操作：执行前快照读旧版本，执行后快照读新版本，
+     * 但审计行仍以原资源 id 归档。例如 SLA 策略更新：{@code resourceId="#id"}、
+     * {@code afterResourceId="#result.id"} —— before 是旧 ACTIVE 版、after 是新 ACTIVE 版。
+     */
+    String afterResourceId() default "";
+
+    /**
+     * 是否在 before/after 快照一致时跳过记录（默认 {@code false}）。
+     *
+     * <p>仅用于「幂等重放」这类方法：例如创建工单带 Idempotency-Key 时，命中缓存会返回
+     * 已存在的工单 id，但这次请求并没有创建任何东西。对这种方法设 {@code true}，
+     * 切面会在快照相同时跳过审计，避免把一次幂等重放伪装成新的创建操作。
+     *
+     * <p>⚠️ 默认必须是 {@code false}：成功的无字段变化操作仍然是一次业务操作，
+     * 不应由切面擅自决定「没变化就不记」。
+     */
+    boolean skipIfUnchanged() default false;
+
+    /**
+     * 是否在同一资源已有同操作码审计时跳过（默认 {@code false}）。
+     *
+     * <p>用于有幂等重放语义的创建方法：幂等缓存命中会返回旧资源的 id，
+     * AOP 无法从方法返回值分辨「刚创建」与「命中缓存」。设为 {@code true} 后，
+     * 切面会在写入前检查同一 {@code operation + resourceType + resourceId} 是否已有记录，
+     * 避免每次重放都伪造一条新的 CREATE 审计。
+     *
+     * <p>⚠️ 只给幂等创建操作使用；普通更新即使同一资源同一操作码也应保留每次行为轨迹。
+     */
+    boolean skipIfAlreadyAudited() default false;
 }

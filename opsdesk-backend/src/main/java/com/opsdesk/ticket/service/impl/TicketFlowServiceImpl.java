@@ -8,9 +8,12 @@ import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
 import com.opsdesk.common.enums.AuditOperation;
 import com.opsdesk.common.enums.AuditResourceType;
+import com.opsdesk.common.enums.NotificationType;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.SlaState;
 import com.opsdesk.common.enums.TicketHistoryAction;
+import com.opsdesk.common.enums.TicketStatus;
+import com.opsdesk.notification.service.NotificationEvent;
 import com.opsdesk.sla.service.SlaPauseService;
 import com.opsdesk.sla.service.TicketSlaCalculator;
 import com.opsdesk.ticket.dto.TicketAssignDTO;
@@ -32,6 +35,7 @@ import com.opsdesk.user.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -77,6 +81,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
     private final RoleService roleService;
     private final SlaPauseService slaPauseService;
     private final TicketSlaCalculator ticketSlaCalculator;
+    private final ApplicationEventPublisher eventPublisher;
 
     public TicketFlowServiceImpl(TicketService ticketService,
                                  TicketQueryService ticketQueryService,
@@ -88,7 +93,8 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                                  UserRoleService userRoleService,
                                  RoleService roleService,
                                  SlaPauseService slaPauseService,
-                                 TicketSlaCalculator ticketSlaCalculator) {
+                                 TicketSlaCalculator ticketSlaCalculator,
+                                 ApplicationEventPublisher eventPublisher) {
         this.ticketService = ticketService;
         this.ticketQueryService = ticketQueryService;
         this.ticketMapper = ticketMapper;
@@ -100,6 +106,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         this.roleService = roleService;
         this.slaPauseService = slaPauseService;
         this.ticketSlaCalculator = ticketSlaCalculator;
+        this.eventPublisher = eventPublisher;
     }
 
     // ==================== 矩阵 #2 assign ====================
@@ -118,6 +125,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         TicketStateMachine.Transition transition =
                 stateMachine.check(ticket, TicketHistoryAction.ASSIGN, user);
         apply(ticket, transition, user, assignee.getId(), "分派给 " + displayNameOf(assignee));
+        publishAssignedNotification(ticket, assignee.getId(), user.userId(), false);
         return ticketQueryService.detailForFlow(ticketId);
     }
 
@@ -173,6 +181,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         // 矩阵 #6：只换 assignee_id，状态仍是 ASSIGNED。
         // ⚠️ stampsFirstResponse = false → apply() 传 null → SQL 跳过该列 → 保留首轮响应时间
         apply(ticket, transition, user, assignee.getId(), "转派给 " + displayNameOf(assignee));
+        publishAssignedNotification(ticket, assignee.getId(), user.userId(), true);
         return ticketQueryService.detailForFlow(ticketId);
     }
 
@@ -393,16 +402,50 @@ public class TicketFlowServiceImpl implements TicketFlowService {
         historyRecorder.record(ticket.getId(), user.userId(), transition.action(),
                 transition.from(), transition.to(), remark);
 
+        // §14.4：ticket_history 记业务过程、audit_log 记系统关键操作；本方法不手写 audit_log，
+        // 审计由 public 流转方法上的 @AuditLog 切面统一记录，避免同一操作重复落两条。
+        // 状态确实变化时通知创建人；ASSIGN 也会通知新处理人（由 assign() 单独发）。
+        if (transition.from() != transition.to()) {
+            publishStatusChangedNotification(ticket, transition.to(), user.userId());
+        }
+
         log.info("[状态流转] 成功：ticketId={} operator={} {} {} → {}",
                 ticket.getId(), user.userId(), transition.action(),
                 transition.from(), transition.to());
-
-        // TODO(D6): 审计（AuditOperation.TICKET_CLOSE / TICKET_TRANSFER / TICKET_HOLD …，
-        //   注意枚举里目前只有 TICKET_ASSIGN/TRANSFER/CLOSE，RESOLVE/REJECT/HOLD/RESUME 待补）
-        //   与通知（通知处理人 / 创建人）—— 都是 Day 6 的交付物，本单只留调用点。
     }
 
-    /** §9.4「退出暂停态」的补丁：清空暂停起点 + 顺延解决时限 + 累加暂停分钟（resume / close 共用） */
+    /**
+     * 分派 / 转派通知处理人。
+     *
+     * <p>不通知操作者自己（操作人有状态流转响应，不需要给自己发 inbox 通知）。
+     * 同步发布，跟分派事务一起提交/回滚；Day 9 只替换监听器为 MQ 消费者。
+     */
+    private void publishAssignedNotification(Ticket ticket, Long recipientId, Long operatorId, boolean transfer) {
+        if (recipientId == null || recipientId.equals(operatorId)) {
+            return;
+        }
+        String action = transfer ? "转派" : "分派";
+        String title = transfer ? "工单已转派给你" : "工单已分派给你";
+        String content = "工单 " + ticket.getTicketNo() + "「" + ticket.getTitle() + "」已" + action + "给你处理。";
+        eventPublisher.publishEvent(new NotificationEvent(recipientId, NotificationType.TICKET_ASSIGNED,
+                title, content, "TICKET", ticket.getId()));
+    }
+
+    /** 状态真实变化时通知创建人（创建人本人操作则不自我提醒） */
+    private void publishStatusChangedNotification(Ticket ticket, TicketStatus toStatus, Long operatorId) {
+        Long creatorId = ticket.getCreatorId();
+        if (creatorId == null || creatorId.equals(operatorId)) {
+            return;
+        }
+        String content = "工单 " + ticket.getTicketNo() + "「" + ticket.getTitle()
+                + "」状态已更新为 " + toStatus + "。";
+        eventPublisher.publishEvent(new NotificationEvent(creatorId, NotificationType.TICKET_STATUS_CHANGED,
+                "工单状态已更新", content, "TICKET", ticket.getId()));
+    }
+
+    /**
+     * §9.4「退出暂停态」的补丁：清空暂停起点 + 顺延解决时限 + 累加暂停分钟（resume / close 共用）
+     */
     private TicketStatePatch resumePatch(SlaPauseService.ResumeOutcome outcome) {
         return TicketStatePatch.builder()
                 .clearSlaPausedAt(true)

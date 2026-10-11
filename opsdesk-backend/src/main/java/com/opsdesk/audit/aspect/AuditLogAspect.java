@@ -26,9 +26,9 @@ import java.lang.reflect.Method;
  * <pre>
  * 事务拦截器（order = 0，最外层）
  *   └─ 本切面（order = LOWEST_PRECEDENCE，在事务<b>里面</b>）
- *        ├─ ① 执行前：查 before 快照
+ *        ├─ ① 执行前：查 before 快照（create 的 #result 尚不存在，快照为 null）
  *        ├─ ② proceed()：业务方法（含它自己的 SQL）
- *        ├─ ③ 执行后：查 after 快照
+ *        ├─ ③ 执行后：解析 afterResourceId（支持 #result.id），再查 after 快照
  *        └─ ④ 写 audit_log
  * </pre>
  * Spring 的 {@code TransactionInterceptor} 默认 order 是 {@code LOWEST_PRECEDENCE}，
@@ -46,6 +46,12 @@ import java.lang.reflect.Method;
  * <h2>⚠️ 自调用不生效</h2>
  * 同类内部 {@code this.xxx()} 绕过代理，注解不会被织入。本项目的流转都是
  * Controller → Service 的外部调用，不受影响；但后续若要加埋点，注意这一点。
+ *
+ * <h2>创建操作的资源 id</h2>
+ * {@code resourceId="#result.id"} 时，执行前 {@code #result} 为 {@code null}，
+ * 所以 before 快照为空；执行后从返回值读 id，再取 after 快照。普通 update/delete 仍然用
+ * {@code #id} / {@code #ticketId}，before/after 都指向同一资源。版本化 update 可用
+ * {@code afterResourceId="#result.id"} 让 after 指向新版本，审计行仍按原 id 归档。
  */
 @Slf4j
 @Aspect
@@ -72,8 +78,10 @@ public class AuditLogAspect {
      */
     @Around("@annotation(auditLog)")
     public Object around(ProceedingJoinPoint joinPoint, AuditLog auditLog) throws Throwable {
-        Long resourceId = resolveResourceId(joinPoint, auditLog.resourceId());
-        String beforeData = auditRecordService.snapshot(auditLog.resourceType(), resourceId);
+        // 普通 update/delete：before/after 都用参数里的 id。
+        // create：执行前没有资源 id，#result 暂为 null → before_data 留 null（新对象不存在）。
+        Long beforeResourceId = resolveResourceId(joinPoint, auditLog.resourceId(), null);
+        String beforeData = auditRecordService.snapshot(auditLog.resourceType(), beforeResourceId);
 
         Object result;
         try {
@@ -82,11 +90,30 @@ public class AuditLogAspect {
         catch (Throwable ex) {
             // ⚠️ 业务失败 → 不写审计（见类注释）。异常原样抛出，不改写。
             log.debug("[审计] 业务方法抛异常，跳过审计。operation={} resourceType={} resourceId={}",
-                    auditLog.operation(), auditLog.resourceType(), resourceId, ex);
+                    auditLog.operation(), auditLog.resourceType(), beforeResourceId, ex);
             throw ex;
         }
 
-        String afterData = auditRecordService.snapshot(auditLog.resourceType(), resourceId);
+        // create 的资源 id 只能在方法成功后从 #result 取；普通方法的表达式仍是 #id / #ticketId。
+        Long afterResourceId = resolveResourceId(joinPoint, auditLog.afterResourceId(), result);
+        if (afterResourceId == null) {
+            afterResourceId = resolveResourceId(joinPoint, auditLog.resourceId(), result);
+        }
+        Long resourceId = beforeResourceId != null ? beforeResourceId : afterResourceId;
+        String afterData = auditRecordService.snapshot(auditLog.resourceType(), afterResourceId);
+
+        if (auditLog.skipIfUnchanged() && java.util.Objects.equals(beforeData, afterData)) {
+            log.debug("[审计] before/after 相同，按注解配置跳过（幂等重放）。operation={} resourceType={} resourceId={}",
+                    auditLog.operation(), auditLog.resourceType(), resourceId);
+            return result;
+        }
+        if (auditLog.skipIfAlreadyAudited()
+                && auditRecordService.exists(auditLog.operation(), auditLog.resourceType(), resourceId)) {
+            log.debug("[审计] 同资源同操作码已有记录，按注解配置跳过（幂等创建重放）。operation={} resourceType={} resourceId={}",
+                    auditLog.operation(), auditLog.resourceType(), resourceId);
+            return result;
+        }
+
         auditRecordService.record(auditLog.operation(), auditLog.resourceType(), resourceId,
                 beforeData, afterData);
         return result;
@@ -106,8 +133,13 @@ public class AuditLogAspect {
      * <p>解析失败只记 warn 并返回 {@code null}（before/after 留空）——
      * 表达式写错是开发期问题，不该让线上的业务操作失败。
      */
-    private Long resolveResourceId(ProceedingJoinPoint joinPoint, String expression) {
+    private Long resolveResourceId(ProceedingJoinPoint joinPoint, String expression, Object result) {
         if (!StringUtils.hasText(expression)) {
+            return null;
+        }
+        // 创建类操作执行前资源还不存在：#result / #result.id 按约定先解析为 null，
+        // 不把它当表达式错误打 warn；执行后再用真实返回值解析。
+        if (result == null && expression.trim().startsWith("#result")) {
             return null;
         }
         try {
@@ -115,6 +147,7 @@ public class AuditLogAspect {
             SimpleEvaluationContext context = SimpleEvaluationContext
                     .forReadOnlyDataBinding()
                     .build();
+            context.setVariable("result", result);
 
             Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
             String[] parameterNames = PARAMETER_NAME_DISCOVERER.getParameterNames(method);

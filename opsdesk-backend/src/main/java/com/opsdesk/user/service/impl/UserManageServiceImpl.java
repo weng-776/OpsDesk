@@ -1,12 +1,15 @@
 package com.opsdesk.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.auth.service.PermissionLoader;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.datascope.DepartmentScopeHelper;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.PageResult;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.TicketStatus;
 import com.opsdesk.organization.entity.Department;
 import com.opsdesk.organization.service.DepartmentService;
@@ -192,6 +195,8 @@ public class UserManageServiceImpl implements UserManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.USER_CREATE, resourceType = AuditResourceType.USER,
+            resourceId = "#result")
     public Long create(UserCreateDTO dto) {
         String username = dto.getUsername().trim();
         assertUsernameAvailable(username, null);
@@ -226,6 +231,8 @@ public class UserManageServiceImpl implements UserManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.USER_UPDATE, resourceType = AuditResourceType.USER,
+            resourceId = "#id")
     public void update(Long id, UserUpdateDTO dto) {
         User existing = requireUser(id);
 
@@ -273,6 +280,8 @@ public class UserManageServiceImpl implements UserManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.USER_STATUS_CHANGE, resourceType = AuditResourceType.USER,
+            resourceId = "#id")
     public void updateStatus(Long id, UserStatusDTO dto) {
         requireUser(id);
 
@@ -290,6 +299,8 @@ public class UserManageServiceImpl implements UserManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.USER_ROLE_CHANGE, resourceType = AuditResourceType.USER,
+            resourceId = "#id")
     public void assignRoles(Long id, UserRoleDTO dto) {
         requireUser(id);
         List<Long> roleIds = normalizeRoleIds(dto.getRoleIds());
@@ -304,6 +315,8 @@ public class UserManageServiceImpl implements UserManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.USER_DELETE, resourceType = AuditResourceType.USER,
+            resourceId = "#id")
     public void delete(Long id) {
         requireUser(id);
 

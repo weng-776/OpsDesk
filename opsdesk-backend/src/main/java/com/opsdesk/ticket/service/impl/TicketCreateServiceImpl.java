@@ -2,9 +2,12 @@ package com.opsdesk.ticket.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.UserContext;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.OutboxStatus;
 import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.common.enums.TicketPriority;
@@ -130,6 +133,8 @@ public class TicketCreateServiceImpl implements TicketCreateService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_CREATE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#result.id", skipIfAlreadyAudited = true)
     public TicketCreatedVO create(TicketCreateDTO dto, String idempotencyKey) {
         boolean idempotent = StringUtils.hasText(idempotencyKey);
         AtomicReference<TicketCreatedVO> resultHolder = new AtomicReference<>();
@@ -215,6 +220,10 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         applySla(saved);
         writeHistory(saved, creatorId);
         writeOutbox(saved);
+
+        // TODO(D6-04 follow-up / Day 9 MQ): 新单进入公共待受理池，但当前没有「公共池受理方」
+        // 这一条可投递的 userId。不能广播给所有 AGENT（未定义 fan-out 策略）；待 Day 9
+        // 由 MQ/公共池事件确定订阅者后再通知。
 
         log.info("[创建工单] id={} ticketNo={} creatorId={} departmentId={} priority={} status={}",
                 saved.getId(), saved.getTicketNo(), creatorId, saved.getDepartmentId(),

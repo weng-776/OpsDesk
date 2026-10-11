@@ -52,13 +52,13 @@ class AuditLogQueryServiceTest {
     private static final long AGENT_ZHANG = 2L;
     private static final long EMP_WANG = 4L;
 
-    /** 本类自插行的统一时间基准（2026-10-10 09:00 / 10:00 / 11:00） */
-    private static final LocalDateTime T1 = LocalDateTime.of(2026, 10, 10, 9, 0, 0);
-    private static final LocalDateTime T2 = LocalDateTime.of(2026, 10, 10, 10, 0, 0);
-    private static final LocalDateTime T3 = LocalDateTime.of(2026, 10, 10, 11, 0, 0);
+    /** 本类自插行的统一时间基准（未来时间，隔离其他集成测试真实提交的审计行） */
+    private static final LocalDateTime T1 = LocalDateTime.of(2099, 10, 10, 9, 0, 0);
+    private static final LocalDateTime T2 = LocalDateTime.of(2099, 10, 10, 10, 0, 0);
+    private static final LocalDateTime T3 = LocalDateTime.of(2099, 10, 10, 11, 0, 0);
 
-    /** 只看本类自插行的下界 —— 种子审计行都是 2026-10-06，会被它挡在外面 */
-    private static final LocalDateTime OWN_ROWS_FROM = LocalDateTime.of(2026, 10, 10, 0, 0, 0);
+    /** 只看本类自插行的下界 */
+    private static final LocalDateTime OWN_ROWS_FROM = LocalDateTime.of(2099, 10, 10, 0, 0, 0);
 
     /**
      * 本类自插行用的 resourceId 段。
@@ -261,6 +261,7 @@ class AuditLogQueryServiceTest {
         PageResult<AuditLogVO> result = page(q -> {
             q.setStartTime(OWN_ROWS_FROM);
             q.setOperation(AuditOperation.SLA_POLICY_UPDATE);
+            q.setResourceId(SYNTHETIC_RESOURCE_ID);
         });
 
         assertThat(result.getList().get(0).getUserName()).isEqualTo("系统");

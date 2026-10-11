@@ -1,9 +1,12 @@
 package com.opsdesk.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.auth.service.PermissionLoader;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
+import com.opsdesk.common.enums.AuditOperation;
+import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.user.dto.RolePermissionDTO;
 import com.opsdesk.user.entity.Permission;
 import com.opsdesk.user.entity.Role;
@@ -44,9 +47,8 @@ import java.util.stream.Collectors;
  *   <li>受影响用户：一次 {@code user_role WHERE role_id = ?}</li>
  * </ul>
  *
- * <p>⚠️ §7.3 还要求「写审计 {@code ROLE_PERMISSION_CHANGE}」—— {@code @AuditLog} 注解与
- * AOP 切面是 <b>D6-01</b> 的交付物，本单做不了，留给 D6-04 的埋点补全
- * （与 D1-03 的处理一致）。
+ * <p>§7.3 要求的 {@code ROLE_PERMISSION_CHANGE} 审计由 {@code assignPermissions} 上的
+ * {@code @AuditLog} 切面完成；本类不直接写 {@code audit_log}，避免与 §14.4 的审计职责重叠。
  */
 @Slf4j
 @Service
@@ -142,6 +144,8 @@ public class RoleManageServiceImpl implements RoleManageService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.ROLE_PERMISSION_CHANGE, resourceType = AuditResourceType.ROLE,
+            resourceId = "#roleId")
     public void assignPermissions(Long roleId, RolePermissionDTO dto) {
         requireRole(roleId);
         List<Long> permissionIds = normalizePermissionIds(dto.getPermissionIds());

@@ -6,7 +6,9 @@ import com.opsdesk.common.BizException;
 import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
+import com.opsdesk.common.enums.NotificationType;
 import com.opsdesk.common.enums.Role;
+import com.opsdesk.notification.service.NotificationEvent;
 import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.ticket.dto.CommentCreateDTO;
 import com.opsdesk.ticket.dto.TicketQuery;
@@ -24,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -59,17 +62,20 @@ public class TicketCommentBizServiceImpl implements TicketCommentBizService {
     private final TicketHistoryService ticketHistoryService;
     private final UserService userService;
     private final TicketDataScopeHelper dataScopeHelper;
+    private final ApplicationEventPublisher eventPublisher;
 
     public TicketCommentBizServiceImpl(TicketService ticketService,
                                        TicketCommentService ticketCommentService,
                                        TicketHistoryService ticketHistoryService,
                                        UserService userService,
-                                       TicketDataScopeHelper dataScopeHelper) {
+                                       TicketDataScopeHelper dataScopeHelper,
+                                       ApplicationEventPublisher eventPublisher) {
         this.ticketService = ticketService;
         this.ticketCommentService = ticketCommentService;
         this.ticketHistoryService = ticketHistoryService;
         this.userService = userService;
         this.dataScopeHelper = dataScopeHelper;
+        this.eventPublisher = eventPublisher;
     }
 
     // ==================== 列表（§8.7） ====================
@@ -131,12 +137,37 @@ public class TicketCommentBizServiceImpl implements TicketCommentBizService {
         history.setRemark(truncateRemark(dto.getContent()));
         ticketHistoryService.save(history);
 
-        // TODO(D6): 评论成功后触发通知 —— 通知模块是 Day 6 的交付物（本单只留调用点）。
-        //   接通后在此处发 TicketCommentedEvent（收件人 = 创建人 + 受理人；internal=1 时不通知创建人）。
+        publishCommentNotifications(ticket, saved, user.userId());
+
         log.info("[工单评论] 已添加。ticketId={} commentId={} userId={} internal={}",
                 ticket.getId(), saved.getId(), user.userId(), saved.getInternal());
 
         return toVO(saved, loadDisplayNames(List.of(saved)));
+    }
+
+    /**
+     * 评论通知对方（§3.10 TICKET_COMMENT）。公开评论通知创建人 + 处理人；内部备注不通知创建人。
+     * 操作者本人排除，且接收人去重，避免创建人和处理人恰好相同时收到两条。
+     */
+    private void publishCommentNotifications(Ticket ticket, TicketComment comment, Long operatorId) {
+        LinkedHashSet<Long> recipients = new LinkedHashSet<>();
+        if (ticket.getCreatorId() != null) {
+            recipients.add(ticket.getCreatorId());
+        }
+        if (ticket.getAssigneeId() != null) {
+            recipients.add(ticket.getAssigneeId());
+        }
+        recipients.remove(operatorId);
+        if (comment.getInternal() != null && comment.getInternal() != INTERNAL_NO) {
+            recipients.remove(ticket.getCreatorId());
+        }
+
+        String title = "工单有新评论";
+        String content = "工单 " + ticket.getTicketNo() + "「" + ticket.getTitle() + "」有一条新评论。";
+        for (Long recipientId : recipients) {
+            eventPublisher.publishEvent(new NotificationEvent(recipientId, NotificationType.TICKET_COMMENT,
+                    title, content, "TICKET", ticket.getId()));
+        }
     }
 
     // ==================== 私有 ====================

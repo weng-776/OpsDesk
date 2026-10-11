@@ -215,14 +215,15 @@ class AuditLogAspectTest {
     // ==================== 快照服务与请求上下文的边界 ====================
 
     @Test
-    @DisplayName("快照：TICKET 有 provider；未注册的类型与不存在的资源都安全降级为 null")
+    @DisplayName("快照：TICKET / USER 有 provider；密码脱敏、不存在资源安全降级")
     void 快照降级路径() {
         String ticketJson = auditRecordService.snapshot(AuditResourceType.TICKET, TICKET_OPEN);
         assertThat(ticketJson).as("TICKET 已注册 provider").isNotNull();
         assertThat(ticketJson).contains("ticketNo").contains("OD2026100600001");
 
-        assertThat(auditRecordService.snapshot(AuditResourceType.USER, 1L))
-                .as("USER 还没注册 provider → 降级为 null，不阻断业务").isNull();
+        String userJson = auditRecordService.snapshot(AuditResourceType.USER, 1L);
+        assertThat(userJson).as("USER 已注册 provider").isNotNull();
+        assertThat(userJson).contains("username").doesNotContain("password");
         assertThat(auditRecordService.snapshot(AuditResourceType.TICKET, 999_999L))
                 .as("资源不存在 → null").isNull();
         assertThat(auditRecordService.snapshot(AuditResourceType.TICKET, null))
