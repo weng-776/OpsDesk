@@ -1,5 +1,6 @@
 package com.opsdesk.config;
 
+import com.opsdesk.mq.support.OpsDeskMessageRecoverer;
 import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
@@ -83,30 +84,23 @@ public class RabbitListenerConfig {
     /**
      * 死信 recoverer：重试耗尽后把消息 republish 到 {@code opsdesk.dlx}。
      *
-     * <h2>🔴 为什么必须显式清掉路由键前缀（D9-02 修的真实 bug）</h2>
-     * {@link RepublishMessageRecoverer} 默认会给路由键加前缀 <b>{@code "error."}</b>
+     * <p>用本项目的 {@link OpsDeskMessageRecoverer}（D9-04 起）而不是裸的
+     * {@code RepublishMessageRecoverer} —— 前者在 republish 时多补一个
+     * {@code x-retry-count} 头，供 D9-05 的死信管理接口读（§13.4 约束 4）。
+     *
+     * <h2>🔴 它同时保留了「清掉 error. 前缀」这个修复（D9-02 发现的真 bug）</h2>
+     * {@link RepublishMessageRecoverer} 默认给路由键加前缀 <b>{@code "error."}</b>
      * （见其字段 {@code DEFAULT_ERROR_ROUTING_KEY_PREFIX}）。而本项目的 DLQ 绑定用的是
      * <b>原始 Routing Key</b>（{@code RabbitMQConfig#ticketCreatedDlqBinding} 绑的是 {@code ticket.created}），
      * 于是重试耗尽后发出去的路由键是 {@code error.ticket.created} ——
      * <b>匹配不上任何绑定</b>，又因为 {@code spring.rabbitmq.template.mandatory=true}，
-     * 这条消息被 broker 退回，最终<b>凭空消失</b>：不进 DLQ、也不报错，
-     * 只在日志里留一行 {@code Republishing failed message to exchange 'opsdesk.dlx' with routing key error.ticket.created}。
+     * 这条消息被 broker 退回，最终<b>凭空消失</b>：不进 DLQ、也不报错。
      *
-     * <p>清掉前缀后，recoverer 路径与「broker 原生死信」路径（队列的
-     * {@code x-dead-letter-routing-key = 原 Routing Key}）用的是同一个键，
-     * 两条路径才真正汇到同一个 DLQ —— 这正是 {@code RabbitMQConfig} 类注释里写的设计意图。
-     *
-     * <p>⚠️ 既有单测 {@code RabbitListenerConfigTest} 只断言了「调用了
-     * {@code send(opsdesk.dlx, ?, ?)}」，没断言路由键，所以这个 bug 从 Day 1 一直没暴露。
-     * 现在那里补了 {@code eq(原始 Routing Key)} 的断言，改回去就会红。
-     *
-     * <p>⚠️ 边界：若消息的 {@code receivedRoutingKey} 为空（只会出现在
-     * 手工构造消息的测试里，正常从交换机进来的消息一定有），清理后仍是空 →
-     * 无法路由。生产路径不受影响。
+     * <p>⚠️ 既有单测 {@code RabbitListenerConfigTest} 已补上「路由键必须等于原 Routing Key」与
+     * 「必须带 {@code x-retry-count}」两条断言，改坏任意一条都会红。
      */
     private RepublishMessageRecoverer recoverer(RabbitTemplate rabbitTemplate) {
-        return new RepublishMessageRecoverer(rabbitTemplate, RabbitMQConfig.DLX)
-                // 空前缀 = 沿用消息原始 Routing Key（见方法注释）
-                .errorRoutingKeyPrefix("");
+        // maxAttempts 直接复用本类的常量：重试次数与写进消息头的值必须是同一个来源
+        return new OpsDeskMessageRecoverer(rabbitTemplate, RabbitMQConfig.DLX, MAX_ATTEMPTS);
     }
 }

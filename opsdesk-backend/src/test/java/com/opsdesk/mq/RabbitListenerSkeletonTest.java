@@ -11,7 +11,10 @@ import com.opsdesk.mq.event.TicketAssignedEvent;
 import com.opsdesk.mq.event.TicketCreatedEvent;
 import com.opsdesk.mq.event.TicketStatusChangedEvent;
 import com.opsdesk.mq.listener.TicketCreatedListener;
+import com.opsdesk.mq.support.OpsDeskMessageRecoverer;
 import com.opsdesk.mq.support.OutboxPublisher;
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.GetResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +25,7 @@ import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.core.QueueInformation;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.connection.Connection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
@@ -81,7 +85,16 @@ class RabbitListenerSkeletonTest extends AbstractMqIntegrationTest {
         // ① 等消费者把 D9-01 留下的历史消息排空（否则 DLQ 增量断言不确定）
         awaitQueueDrained(RabbitMQConfig.QUEUE_TICKET_CREATED, 30_000);
 
-        // ② 抓 com.opsdesk.mq 下的日志（监听器 + 幂等守卫都在这个包下）
+        // ② D9-04 起要**读 DLQ 里的消息头**（x-retry-count / x-death），所以必须先清空 DLQ，
+        //    否则 receive 拿到的是历史死信、断言张冠李戴。
+        //    ⚠️ 开发库里 DLQ 只装测试/e2e 产生的死信，清掉是安全的（且顺带做了卫生）。
+        int purged = rabbitAdmin.purgeQueue(RabbitMQConfig.DLQ_TICKET_CREATED);
+        if (purged > 0) {
+            System.out.printf("[测试] 清空 %d 条历史死信，保证本轮断言确定。queue=%s%n",
+                    purged, RabbitMQConfig.DLQ_TICKET_CREATED);
+        }
+
+        // ③ 抓 com.opsdesk.mq 下的日志（监听器 + 幂等守卫 + Confirm/Return 回调都在这个包下）
         mqLogger = (Logger) LoggerFactory.getLogger("com.opsdesk.mq");
         appender = new ListAppender<>();
         appender.start();
@@ -191,12 +204,20 @@ class RabbitListenerSkeletonTest extends AbstractMqIntegrationTest {
         assertThat(elapsed)
                 .as("§13.4：退避 1s → 2s，三次尝试总耗时不应低于 3s（实际 %d ms）", elapsed)
                 .isGreaterThanOrEqualTo(3_000);
+
+        // ④ ⭐ D9-04：死信必须带 x-retry-count = maxAttempts（§13.4 约束 4）
+        //    这是「自定义 recoverer 真的生效」的**唯一**证据 ——
+        //    覆写签名写错时它会悄悄消失，编译与其它日志都看不出来。
+        Message dead = awaitDlqMessage(15_000);
+        assertThat(dead.getMessageProperties().getHeaders())
+                .as("D9-05 的死信接口要靠这个头显示「重试了几次」")
+                .containsEntry(OpsDeskMessageRecoverer.HEADER_RETRY_COUNT, 3);
     }
 
     // ==================== 验收 4：反序列化失败 → 进 DLQ，不进监听器 ====================
 
     @Test
-    @DisplayName("验收4：畸形 JSON → 消息进 DLQ（不阻塞队列、不无限重试），监听器根本不会被调用")
+    @DisplayName("验收4：畸形 JSON → 消息进 DLQ（不阻塞队列），监听器根本不会被调用")
     void 反序列化失败进死信队列() {
         int dlqBefore = queueDepth(RabbitMQConfig.DLQ_TICKET_CREATED);
 
@@ -214,6 +235,78 @@ class RabbitListenerSkeletonTest extends AbstractMqIntegrationTest {
                 .as("反序列化失败发生在进入监听器之前 → 业务一行都不该执行")
                 .isZero();
         verify(ticketCreatedListener, never()).onTicketCreated(any(), any());
+
+        // ⚠️ 实测结论：在本项目的配置下（容器工厂挂了重试 AdviceChain），反序列化失败也是
+        //    **走 recoverer** 进 DLQ 的（栈里能看到 RetryOperationsInterceptor），
+        //    所以它同样带 x-retry-count，而**不带** x-death。
+        //    x-death 只出现在「broker 原生死信」那条路 —— 见下面的 原生死信路径 用例。
+        Message dead = awaitDlqMessage(15_000);
+        assertThat(dead.getMessageProperties().getHeaders())
+                .as("走 recoverer 的死信带 x-retry-count")
+                .containsEntry(OpsDeskMessageRecoverer.HEADER_RETRY_COUNT, 3);
+    }
+
+    // ==================== 验收 2（原生路径）：x-death 里有重试/死信计数 ====================
+
+    @Test
+    @DisplayName("验收2：broker 原生死信 → 消息头里能读到 x-death[0].count（D9-05 要兼容这条路径）")
+    void 原生死信路径带xDeath() throws Exception {
+        // ⚠️ 队列上有消费者，消息会被立刻消费掉 → 先停容器，否则 basicGet 拿不到
+        stopListenerContainers();
+
+        // 造一条消息放进业务队列，然后用**原始 Channel** 显式 nack(requeue=false)。
+        // 这是「broker 原生死信」的唯一可靠触发方式：容器自己的 error handler 在本项目里
+        // 轮不到（recoverer 先把异常兜住了），所以不能靠「发一条坏消息」来制造。
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        props.setMessageId(newId());
+        rabbitTemplate.send(RabbitMQConfig.EXCHANGE, RabbitMQConfig.RK_TICKET_CREATED,
+                new Message("{\"ticketId\":1}".getBytes(StandardCharsets.UTF_8), props));
+
+        try (Connection connection = rabbitTemplate.getConnectionFactory().createConnection();
+             Channel channel = connection.createChannel(false)) {
+            // basicGet 不自动 ack，拿到 deliveryTag 后手动 nack
+            GetResponse got = channel.basicGet(RabbitMQConfig.QUEUE_TICKET_CREATED, false);
+            assertThat(got).as("队列里应有一条消息可被 nack").isNotNull();
+            channel.basicNack(got.getEnvelope().getDeliveryTag(), false, false);
+        }
+
+        Message dead = awaitDlqMessage(15_000);
+        assertThat(dead.getMessageProperties().getHeaders())
+                .as("§13.4 约束 4：原生死信路径的重试次数来自 broker 的 x-death")
+                .containsKey("x-death");
+    }
+
+    // ==================== 验收 3：routing key 写错 → ReturnsCallback 打日志 ====================
+
+    @Test
+    @DisplayName("验收3：routing key 写错 → broker 退回（mandatory），ReturnsCallback 立刻打 error 日志")
+    void 路由不到队列时打日志() {
+        String bogusRoutingKey = "no.such.routing.key";
+
+        // mandatory=true + publisher-returns=true：路由不到队列时 broker 会把消息退回，
+        // 而不是静默丢弃。convertAndSend 本身不抛异常（退回是异步的），所以只能断言日志。
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE, bogusRoutingKey,
+                ticketCreatedEvent(), message -> {
+                    message.getMessageProperties().setMessageId(newId());
+                    return message;
+                });
+
+        ILoggingEvent returned = awaitLogContaining("[MQ Return]", 15_000);
+        assertThat(returned.getFormattedMessage())
+                .as("§13.4：路由失败必须立刻可见（否则消息静默消失，只能等演示时发现队列没消息）")
+                .contains(bogusRoutingKey)
+                .contains(RabbitMQConfig.EXCHANGE);
+        assertThat(returned.getLevel().toString()).as("这是配置错误，要按 error 级别打").isEqualTo("ERROR");
+    }
+
+    @Test
+    @DisplayName("验收4（补充）：正常路由的消息 ConfirmCallback 记 debug、且不触发 Return")
+    void 正常路由不触发Return回调() {
+        publish(RabbitMQConfig.RK_TICKET_CREATED, ticketCreatedEvent(), newId(), newTraceId());
+        awaitQueueDrained(RabbitMQConfig.QUEUE_TICKET_CREATED, 15_000);
+
+        assertThat(countLogs("[MQ Return]")).as("正常路由不该有退回日志").isZero();
     }
 
     // ==================== 工具 ====================
@@ -258,6 +351,24 @@ class RabbitListenerSkeletonTest extends AbstractMqIntegrationTest {
             sleep();
         }
         assertThat(queueDepth(queue)).as("队列 %s 的消息数应超过 %d", queue, baseline).isGreaterThan(baseline);
+    }
+
+    /**
+     * 从 DLQ 里取一条死信（取走即从队列移除）。
+     *
+     * <p>⚠️ 只能这么读：管理端 API 不适合在测试里调，而 {@code RabbitTemplate.receive} 会
+     * <b>消费</b>掉这条消息 —— 本类在 {@code @BeforeEach} 里已经把 DLQ 清空，
+     * 所以取到的必然是本用例刚产生的那条（且取走顺带做了卫生）。
+     */
+    private Message awaitDlqMessage(int timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            Message message = rabbitTemplate.receive(RabbitMQConfig.DLQ_TICKET_CREATED, 1_000);
+            if (message != null) {
+                return message;
+            }
+        }
+        throw new AssertionError("等待 DLQ 消息超时：" + RabbitMQConfig.DLQ_TICKET_CREATED);
     }
 
     private ILoggingEvent awaitLogContaining(String keyword, int timeoutMs) {

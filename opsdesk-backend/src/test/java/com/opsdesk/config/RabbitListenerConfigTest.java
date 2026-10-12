@@ -1,16 +1,20 @@
 package com.opsdesk.config;
 
 import com.rabbitmq.client.Channel;
+import com.opsdesk.mq.support.OpsDeskMessageRecoverer;
 import org.aopalliance.aop.Advice;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.retry.RepublishMessageRecoverer;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,7 +97,21 @@ class RabbitListenerConfigTest {
         //    于是死信在 opsdesk.dlx 上匹配不到任何绑定；又因为 mandatory=true，
         //    消息被退回后**直接消失**（不进 DLQ、不报错）。D9-02 实测踩到，
         //    这条断言就是防止有人把 errorRoutingKeyPrefix("") 改回去。
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
         verify(rabbitTemplate).send(eq(RabbitMQConfig.DLX), eq(RabbitMQConfig.RK_TICKET_CREATED),
-                (Message) any());
+                captor.capture());
+
+        // ⭐⭐ D9-04：死信必须带 x-retry-count（§13.4 约束 4，D9-05 的死信接口要读它）
+        //    ⚠️ 这条断言同时是「自定义 recoverer 的覆写签名没写错」的守卫：
+        //       additionalHeaders 的签名一旦漂移（变成重载而不是覆写），
+        //       编译不会报错、运行期也不会调用，这个头就悄悄没了 —— 只有这条断言能发现。
+        Map<String, Object> headers = captor.getValue().getMessageProperties().getHeaders();
+        assertThat(headers).containsEntry(OpsDeskMessageRecoverer.HEADER_RETRY_COUNT, 3);
+        // 父类原有的排查用头不能丢
+        assertThat(headers).containsKeys(
+                RepublishMessageRecoverer.X_EXCEPTION_MESSAGE,
+                RepublishMessageRecoverer.X_EXCEPTION_STACKTRACE,
+                RepublishMessageRecoverer.X_ORIGINAL_EXCHANGE,
+                RepublishMessageRecoverer.X_ORIGINAL_ROUTING_KEY);
     }
 }
