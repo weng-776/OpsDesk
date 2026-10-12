@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 后果不是报错，而是该接口<b>对所有人都 40300</b>（谁都拿不到那个码），
  * 或者反过来，§3.6 新增了码但常量类漏了，写注解时只能裸写字符串。
  *
- * <p>所以这里用<b>反射</b>把常量类的值和数据库的 48 条码<b>逐条比对</b>：
+ * <p>所以这里用<b>反射</b>把常量类的值和数据库的 49 条码<b>逐条比对</b>：
  * 任何一边改动而另一边没跟上，这个测试立刻红。
  */
 @SpringBootTest
@@ -70,15 +70,15 @@ class PermissionCodesTest {
     }
 
     @Test
-    @DisplayName("§3.6 定义 48 个权限码（15 MENU + 33 API），常量类与库都应恰为 48")
+    @DisplayName("§3.6 定义 49 个权限码（15 MENU + 34 API），常量类与库都应恰为 49")
     void 权限码总数与规格一致() {
-        assertThat(constantValues()).as("§3.6 的权限码总数").hasSize(48);
+        assertThat(constantValues()).as("§3.6 的权限码总数").hasSize(49);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM permission", Long.class))
-                .as("种子数据灌入的权限码总数").isEqualTo(48L);
+                .as("种子数据灌入的权限码总数").isEqualTo(49L);
     }
 
     @Test
-    @DisplayName("MENU 码 15 个 / API 码 33 个，且常量类的前缀分组与 permission.type 对得上")
+    @DisplayName("MENU 码 15 个 / API 码 34 个，且常量类的前缀分组与 permission.type 对得上")
     void MENU与API分组正确() {
         Set<String> fromConstants = constantValues();
         Set<String> menuFromConstants = fromConstants.stream()
@@ -87,7 +87,7 @@ class PermissionCodesTest {
                 .filter(code -> !code.startsWith("menu:")).collect(java.util.stream.Collectors.toSet());
 
         assertThat(menuFromConstants).as("MENU 码").hasSize(15);
-        assertThat(apiFromConstants).as("API 码").hasSize(33);
+        assertThat(apiFromConstants).as("API 码").hasSize(34);
 
         // 常量类里以 menu: 开头的，必须正好是库里 type = MENU 的那批；反之亦然
         assertThat(menuFromConstants).containsExactlyInAnyOrderElementsOf(codesOfType("MENU"));

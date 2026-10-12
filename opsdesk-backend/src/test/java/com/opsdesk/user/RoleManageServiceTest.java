@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>覆盖的三条验收</h2>
  * <ol>
- *   <li>权限树与种子数据 48 条权限一致，且 MENU 是真正的树、API 是平铺的</li>
+ *   <li>权限树与种子数据 49 条权限一致，且 MENU 是真正的树、API 是平铺的</li>
  *   <li>{@code PUT /api/roles/{id}/permissions} 后 {@code role_permission} 被<b>整体替换</b>
  *       （不是追加、不是部分更新）</li>
  *   <li>改完角色权限，<b>该角色下所有用户</b>的权限缓存被清掉，权限立即变化</li>
@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Transactional
 class RoleManageServiceTest {
 
-    /** 种子角色：1=EMPLOYEE(15 个权限) / 2=AGENT(20) / 3=ADMIN(48) */
+    /** 种子角色：1=EMPLOYEE(15 个权限) / 2=AGENT(20) / 3=ADMIN(49) */
     private static final long ROLE_EMPLOYEE = 1L;
     private static final long ROLE_ADMIN = 3L;
 
@@ -73,8 +73,8 @@ class RoleManageServiceTest {
     // ==================== 验收 1：权限树 ====================
 
     @Test
-    @DisplayName("验收1：权限树节点总数 48，与 permission 表逐条一致（无遗漏、无重复）")
-    void 权限树覆盖全部48条权限() {
+    @DisplayName("验收1：权限树节点总数 49，与 permission 表逐条一致（无遗漏、无重复）")
+    void 权限树覆盖全部49条权限() {
         List<PermissionNodeVO> roots = roleManageService.permissionTree();
         List<PermissionNodeVO> flat = flatten(roots);
 
@@ -82,13 +82,13 @@ class RoleManageServiceTest {
         Set<String> codesFromDb = Set.copyOf(jdbcTemplate.queryForList(
                 "SELECT code FROM permission", String.class));
 
-        assertThat(flat).as("节点总数").hasSize(48);
+        assertThat(flat).as("节点总数").hasSize(49);
         assertThat(codesFromTree).as("树里的权限码与库一致").isEqualTo(codesFromDb);
-        assertThat(codesFromTree).as("无重复节点").hasSize(48);
+        assertThat(codesFromTree).as("无重复节点").hasSize(49);
     }
 
     @Test
-    @DisplayName("验收1：MENU 是真三层树（4 根 + 11 子），API 33 条因 parent_id=0 全是顶层节点")
+    @DisplayName("验收1：MENU 是真三层树（4 根 + 11 子），API 34 条因 parent_id=0 全是顶层节点")
     void 权限树的分层形状符合种子数据() {
         List<PermissionNodeVO> roots = roleManageService.permissionTree();
 
@@ -97,13 +97,13 @@ class RoleManageServiceTest {
         List<PermissionNodeVO> apiRoots = roots.stream()
                 .filter(n -> "API".equals(n.getType())).toList();
 
-        assertThat(roots).as("根节点数 = 4 MENU 根 + 33 API 平铺").hasSize(37);
+        assertThat(roots).as("根节点数 = 4 MENU 根 + 34 API 平铺").hasSize(38);
         assertThat(menuRoots).as("MENU 根：工作台/工单中心/知识库/系统管理")
                 .hasSize(4)
                 .extracting(PermissionNodeVO::getCode)
                 .containsExactly("menu:dashboard", "menu:ticket", "menu:knowledge", "menu:system");
-        assertThat(apiRoots).as("API 权限在种子数据里 parent_id 全是 0 → 33 个顶层节点")
-                .hasSize(33);
+        assertThat(apiRoots).as("API 权限在种子数据里 parent_id 全是 0 → 34 个顶层节点")
+                .hasSize(34);
 
         PermissionNodeVO ticketMenu = menuRoots.get(1);
         assertThat(ticketMenu.getCode()).isEqualTo("menu:ticket");
@@ -149,10 +149,10 @@ class RoleManageServiceTest {
             assertThat(role.getPermissionIds()).isNotNull();
         });
 
-        // 与库里的关联数对齐：EMPLOYEE 15 / AGENT 20 / ADMIN 48
+        // 与库里的关联数对齐：EMPLOYEE 15 / AGENT 20 / ADMIN 49
         assertThat(roles.get(0).getPermissionIds()).hasSize(15);
         assertThat(roles.get(1).getPermissionIds()).hasSize(20);
-        assertThat(roles.get(2).getPermissionIds()).hasSize(48);
+        assertThat(roles.get(2).getPermissionIds()).hasSize(49);
 
         assertThat(roles.get(2).getPermissionIds())
                 .as("ADMIN 的权限 ID 与 role_permission 表一致（升序）")
@@ -180,7 +180,7 @@ class RoleManageServiceTest {
         assertThat(after).as("整体替换为新集合").containsExactly(131L, 132L);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM role_permission", Long.class))
-                .as("其他角色的关联不受影响（原 83 条 - 15 + 2）").isEqualTo(70L);
+                .as("其他角色的关联不受影响（原 84 条 - 15 + 2）").isEqualTo(71L);
     }
 
     @Test

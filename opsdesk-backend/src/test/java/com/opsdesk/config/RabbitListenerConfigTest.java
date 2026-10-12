@@ -107,6 +107,9 @@ class RabbitListenerConfigTest {
         //       编译不会报错、运行期也不会调用，这个头就悄悄没了 —— 只有这条断言能发现。
         Map<String, Object> headers = captor.getValue().getMessageProperties().getHeaders();
         assertThat(headers).containsEntry(OpsDeskMessageRecoverer.HEADER_RETRY_COUNT, 3);
+        assertThat(headers.get(OpsDeskMessageRecoverer.HEADER_FAILED_AT))
+                .as("recoverer 路径没有 x-death.time，需自己补 failedAt")
+                .isInstanceOf(String.class);
         // 父类原有的排查用头不能丢
         assertThat(headers).containsKeys(
                 RepublishMessageRecoverer.X_EXCEPTION_MESSAGE,

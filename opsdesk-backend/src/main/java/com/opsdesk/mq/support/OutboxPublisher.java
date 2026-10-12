@@ -76,6 +76,14 @@ public class OutboxPublisher {
      */
     public static final String HEADER_TRACE_ID = TraceIdFilter.TRACE_ID;
 
+    /**
+     * MQ 消息头名：事件类型（= {@code event_outbox.event_type}）。
+     *
+     * <p>D9-05 起设置：死信管理接口（§15.1）要展示 {@code eventType}，而消息体里没有这个字段
+     * （payload 就是事件对象本身，不含类型名）—— 从消息头取最准，且与 outbox 记录一致。
+     */
+    public static final String HEADER_EVENT_TYPE = "eventType";
+
     /** 批大小：一次认领并投递的上限（§13.5 未规定，取 100 控制事务时长） */
     public static final int BATCH_SIZE = 100;
 
@@ -171,6 +179,9 @@ public class OutboxPublisher {
         rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE, outbox.getRoutingKey(), payload, message -> {
             message.getMessageProperties().setMessageId(outbox.getMessageId());
             message.getMessageProperties().setHeader(HEADER_TRACE_ID, traceId);
+            // D9-05：死信管理接口要显示 eventType；消息体里没有这个字段，
+            // 从 event_outbox.event_type 复制到消息头
+            message.getMessageProperties().setHeader(HEADER_EVENT_TYPE, outbox.getEventType());
             // §13.4 消息不丢：持久化（Spring AMQP 默认也是 PERSISTENT，这里显式写出来）
             message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
             return message;

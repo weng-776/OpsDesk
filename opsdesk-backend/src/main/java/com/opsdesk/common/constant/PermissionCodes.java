@@ -13,10 +13,11 @@ package com.opsdesk.common.constant;
  *
  * <p>⚠️ <b>本类的交付归属</b>：按开发工单，权限码常量类是 <b>D2-03</b> 的交付物
  * （D2-03 的「允许改动」里明确列了 `com.opsdesk.common.constant.PermissionCodes`）。
- * 但 D2-02 的 `@RequirePermission` 注解值必须是<b>编译期常量</b>，没有它就编译不过 ——
- * 所以 <b>D2-02 已按 §3.6 把 48 个码全量建好</b>（15 个 MENU + 33 个 API，
- * 与 `OpsDesk_Seed_V1.sql` 灌进 `permission` 表的 48 条<b>逐条一致</b>，
- * 由 {@code PermissionCodesTest} 反射比对守住）。
+ * 但 D2-02 的 {@code @RequirePermission} 注解值必须是<b>编译期常量</b>，没有它就编译不过 ——
+ * 所以 <b>D2-02 已按 §3.6 把原有 48 个码全量建好</b>（15 个 MENU + 33 个 API，
+ * 与 {@code OpsDesk_Seed_V1.sql} 原有 48 条<b>逐条一致</b>，由 {@code PermissionCodesTest}
+ * 反射比对守住）。D9-05 按 §0.5 决策 3 新增了第 49 个 API 码 {@link #MQ_MANAGE}，
+ * 并同步增量补入种子（id=201）与规格基线 §3.6。
  *
  * <p>➡️ <b>D2-03 注意：本类已存在且已完整，直接引用即可，不要再建一个。</b>
  * D2-03 只需要把 §3.6 之外的「权限树组装 / 角色权限全量覆盖 / evict」做掉。
@@ -185,4 +186,19 @@ public final class PermissionCodes {
 
     /** 通知查看 */
     public static final String NOTIFICATION_VIEW = "notification:view";
+
+    /**
+     * MQ 死信管理（工单 D9-05，§0.5 决策 3 拍板新增）。
+     *
+     * <p>⚠️ 为什么要新开一个 API 权限码、而不复用 {@code menu:system:mq}：
+     * §3.6 明确「前端用 MENU 控菜单，<b>后端必须对 API 权限做真正的校验</b>」——
+     * MENU 码只表示「这个菜单能看见」，拿它当 API 校验等于把菜单可见性当授权。
+     * 也不复用 {@code audit:view}：那会让「能看审计」隐式等于「能重投死信」，语义污染。
+     *
+     * <p>本码已同步进 {@code OpsDesk_Seed_V1.sql}（id=201）与规格基线 §3.6，
+     * 由 {@code PermissionCodesTest} 反射比对守住三处一致。
+     * ADMIN 角色是 {@code SELECT 3, id FROM permission} 全量授权，所以自动拥有它；
+     * EMPLOYEE / AGENT 没有 → 访问返回 40300。
+     */
+    public static final String MQ_MANAGE = "mq:manage";
 }

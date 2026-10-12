@@ -4,6 +4,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.retry.RepublishMessageRecoverer;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -54,6 +55,9 @@ public class OpsDeskMessageRecoverer extends RepublishMessageRecoverer {
      */
     public static final String HEADER_RETRY_COUNT = "x-retry-count";
 
+    /** 死信进入时刻；recoverer 路径没有 broker 的 x-death.time，故由 recoverer 自己补 */
+    public static final String HEADER_FAILED_AT = "x-failed-at";
+
     /** 重试次数上限：由容器工厂的 AdviceChain 决定，本类只负责把它写进消息头 */
     private final int maxAttempts;
 
@@ -73,6 +77,8 @@ public class OpsDeskMessageRecoverer extends RepublishMessageRecoverer {
         }
         // recoverer 只在「重试耗尽」时才被调用 → 这个值恒等于 maxAttempts
         headers.put(HEADER_RETRY_COUNT, maxAttempts);
+        // 该路径没有 broker 的 x-death.time；补一个失败时刻，DeadLetterVO.failedAt 才不为空
+        headers.put(HEADER_FAILED_AT, Instant.now().toString());
         return headers;
     }
 }
