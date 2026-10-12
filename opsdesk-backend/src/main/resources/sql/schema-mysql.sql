@@ -12,6 +12,12 @@ CREATE TABLE IF NOT EXISTS SPRING_AI_CHAT_MEMORY (
     `type`            VARCHAR(10)  NOT NULL COLLATE 'utf8mb4_general_ci',
     `timestamp`       TIMESTAMP    NOT NULL,
     PRIMARY KEY (`id`) USING BTREE,
+    -- 读写主路径：按会话取最近 N 条（MessageWindowChatMemory#get）
     INDEX `SPRING_AI_CHAT_MEMORY_CONVERSATION_ID_TIMESTAMP_IDX` (`conversation_id`, `timestamp`) USING BTREE,
+    -- 清理任务用：WHERE `timestamp` < ? 的范围删除（ChatMemoryCleanup）。
+    -- 上面的复合索引以 conversation_id 打头，支撑不了「只按时间」的范围扫描 ——
+    -- 没有这个索引，每天的清理都会全表扫。
+    INDEX `SPRING_AI_CHAT_MEMORY_TIMESTAMP_IDX` (`timestamp`) USING BTREE,
     CONSTRAINT TYPE_CHECK CHECK (type IN ('USER', 'ASSISTANT', 'SYSTEM', 'TOOL'))
 );
+
