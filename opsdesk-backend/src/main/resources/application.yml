@@ -90,10 +90,18 @@ spring:
 
 
   # ================= 上传限制 =================
+  # ⚠️ 这里只是【HTTP 层的粗闸门】—— 真正的限制在各业务的 Service 层：
+  #    · 工单附件 10MB（§23.1）→ AttachmentServiceImpl.MAX_SIZE_BYTES
+  #    · 知识文档 20MB（§12.3）→ KnowledgeDocumentManageServiceImpl.MAX_SIZE_BYTES
+  #    所以这里取两者的【较大值】。曾经的坑：只写 10MB 时，11~20MB 的合法知识文档
+  #    会在进 Controller 之前就被 Spring 挡掉，报错文案还是「单文件不得超过 10MB」——
+  #    与规格写明的 20MB 不符，用户只会困惑。
+  #    放宽这里不会让附件超限：附件在业务层自己判 10MB（这正是 D3-05
+  #    「业务层再判一次、不信任 yml」那条设计现在收到的回报）。
   servlet:
     multipart:
-      max-file-size: 10MB            # §23.1 附件上限 10MB
-      max-request-size: 12MB
+      max-file-size: 20MB
+      max-request-size: 24MB
 
   # ================= Redis =================
   data:
