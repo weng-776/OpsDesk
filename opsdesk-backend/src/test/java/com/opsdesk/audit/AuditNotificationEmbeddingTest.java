@@ -3,18 +3,13 @@ package com.opsdesk.audit;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsdesk.audit.service.AuditLogService;
-import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.AuditOperation;
 import com.opsdesk.common.enums.AuditResourceType;
-import com.opsdesk.common.enums.NotificationType;
 import com.opsdesk.common.enums.Role;
 import com.opsdesk.common.enums.TicketCategory;
 import com.opsdesk.common.enums.TicketPriority;
 import com.opsdesk.common.enums.TicketType;
-import com.opsdesk.notification.dto.NotificationQuery;
-import com.opsdesk.notification.service.NotificationBizService;
-import com.opsdesk.notification.vo.NotificationVO;
 import com.opsdesk.organization.dto.DepartmentCreateDTO;
 import com.opsdesk.organization.dto.DepartmentUpdateDTO;
 import com.opsdesk.organization.service.DepartmentManageService;
@@ -81,7 +76,6 @@ class AuditNotificationEmbeddingTest {
     @Autowired private RolePermissionService rolePermissionService;
     @Autowired private DepartmentManageService departmentManageService;
     @Autowired private SlaPolicyManageService slaPolicyManageService;
-    @Autowired private NotificationBizService notificationBizService;
     @Autowired private AuditLogService auditLogService;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private StringRedisTemplate redisTemplate;
@@ -210,15 +204,15 @@ class AuditNotificationEmbeddingTest {
     }
 
     @Test
-    @DisplayName("通知：分派/转派/状态/评论事件落库，且 ticket_history 与 audit_log 不重复记")
-    void 工单通知触发与审计不重复() {
+    @DisplayName("审计：工单多次流转 + 评论，audit_log 不重复记（ticket_history 与 audit_log 分工）")
+    void 工单操作审计不重复记() {
         TicketCreateDTO create = new TicketCreateDTO();
         create.setTitle("D6-04 通知探针");
         create.setDescription("分派与评论事件端到端验证。");
         create.setType(TicketType.INCIDENT);
         create.setCategory(TicketCategory.NETWORK);
         create.setPriority(TicketPriority.P2);
-        // 让种子员工当创建人，确保分派操作者与创建人不同，能验证状态通知的真实收件人。
+        // 让种子员工当创建人，确保分派操作者与创建人不同（审计里的 operator 才有区分度）
         setCurrentUser(EMP_WANG, Role.EMPLOYEE);
         Long ticketId = ticketCreateService.create(create, null).getId();
 
@@ -227,21 +221,9 @@ class AuditNotificationEmbeddingTest {
         setCurrentUser(ADMIN, Role.ADMIN);
         ticketFlowService.assign(ticketId, assign);
 
-        // 新处理人从自己的通知列表读取，而非第三方视角。
-        setCurrentUser(AGENT_ZHANG, Role.AGENT);
-        PageResult<NotificationVO> agentNotifications = notificationBizService.page(new NotificationQuery());
-        assertThat(agentNotifications.getList()).anySatisfy(notification -> {
-            assertThat(notification.getType()).isEqualTo(NotificationType.TICKET_ASSIGNED);
-            assertThat(notification.getBizId()).isEqualTo(ticketId);
-        });
-
-        // 赋予受理人后，创建人也收到一次独立的状态变更提醒。
-        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
-        PageResult<NotificationVO> creatorStatusNotifications = notificationBizService.page(new NotificationQuery());
-        assertThat(creatorStatusNotifications.getList()).anySatisfy(notification -> {
-            assertThat(notification.getType()).isEqualTo(NotificationType.TICKET_STATUS_CHANGED);
-            assertThat(notification.getBizId()).isEqualTo(ticketId);
-        });
+        // ⚠️ D9-03 起通知走 MQ（异步），本类还是 @Transactional —— 通知断言已挪到
+        //    NotificationMqMigrationTest（那里非事务、能等到链路跑完）。
+        //    这里只留「审计不重复记」这部分：审计与业务同事务，本类验得了。
 
         // 同一 assign 不能在 audit_log 重复，ticket_history 的 ASSIGN 仍是业务历史，不算重复审计。
         assertThat(countAudit(AuditOperation.TICKET_ASSIGN, AuditResourceType.TICKET, ticketId)).isEqualTo(1);
@@ -261,14 +243,7 @@ class AuditNotificationEmbeddingTest {
         ticketFlowService.start(ticketId);
         assertThat(countAudit(AuditOperation.TICKET_STATUS_CHANGE, AuditResourceType.TICKET, ticketId)).isEqualTo(1);
 
-        setCurrentUser(AGENT_LI, Role.AGENT);
-        PageResult<NotificationVO> transferNotifications = notificationBizService.page(new NotificationQuery());
-        assertThat(transferNotifications.getList()).anySatisfy(notification -> {
-            assertThat(notification.getType()).isEqualTo(NotificationType.TICKET_ASSIGNED);
-            assertThat(notification.getBizId()).isEqualTo(ticketId);
-        });
-
-        // 评论事件发给对方（创建人）；其与 COMMENT history 是不同职责，不新增同义 audit_log。
+        // 评论：只写 ticket_history，不新增同义 audit_log。
         Integer statusAuditsBeforeComment = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM audit_log WHERE resource_type = 'TICKET' AND resource_id = ? "
                         + "AND operation = 'TICKET_STATUS_CHANGE'", Integer.class, ticketId);
@@ -276,13 +251,6 @@ class AuditNotificationEmbeddingTest {
         comment.setContent("D6-04 通知对方");
         comment.setInternal(false);
         ticketCommentBizService.add(ticketId, comment);
-
-        setCurrentUser(EMP_WANG, Role.EMPLOYEE);
-        PageResult<NotificationVO> creatorNotifications = notificationBizService.page(new NotificationQuery());
-        assertThat(creatorNotifications.getList()).anySatisfy(notification -> {
-            assertThat(notification.getType()).isEqualTo(NotificationType.TICKET_COMMENT);
-            assertThat(notification.getBizId()).isEqualTo(ticketId);
-        });
         Integer commentAudits = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM audit_log WHERE resource_type = 'TICKET' AND resource_id = ? "
                         + "AND operation = 'TICKET_STATUS_CHANGE'", Integer.class, ticketId);

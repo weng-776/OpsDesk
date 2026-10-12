@@ -48,9 +48,27 @@ public class TicketCreatedListener {
                     event.ticketId(), event.ticketNo(), event.title(), event.creatorId(),
                     event.departmentId(), event.priority(), event.category(), event.type());
 
-            // TODO(D9-03): 业务接线 —— 触发 AI 分析（§10）、通知受理方。
-            //   注意「通知受理方」在 §13.3 里就挂在本事件上；建单时进公共池、没有确定收件人，
-            //   由 D9-03 决定订阅者（对应 TicketCreateServiceImpl:226 的遗留 TODO）。
+            requestAiAnalysis(event);
         });
+    }
+
+    /**
+     * AI 分析的调用点（§13.3：{@code TicketCreatedEvent → AI 分析}）。
+     *
+     * <p>⚠️ 本单（D9-03）只留调用点，<b>不实现</b> —— AI 分析是 Day 10 的工单（D10-04），
+     * 跨工单写 AI 调用会破坏「一张工单一个 commit」的边界。
+     *
+     * <p>D10-04 接线时注意：
+     * <ul>
+     *   <li>AI 是<b>只做建议</b>、不自动覆盖工单字段（§10.2），结果写 {@code ai_analysis} 表；</li>
+     *   <li>外部依赖（Milvus / LLM）不可用时<b>不能把异常抛出去</b>（本批特有约束 6）：
+     *       抛出去会被重试 3 次然后进 DLQ，看起来像代码 bug，实际是环境没起。
+     *       应先探测可用性，不可用则降级（50300 / 记 warn 后正常消费）；</li>
+     *   <li>输出必须落在 §3 枚举白名单内，否则回退默认值并记告警（§10.3）。</li>
+     * </ul>
+     */
+    private void requestAiAnalysis(TicketCreatedEvent event) {
+        // TODO(D10-04): 触发 AI 分析（调 AiAnalysisService，注意上面的降级与白名单要求）
+        log.debug("[MQ 消费] 待 D10-04 接线：AI 分析 ticketId={}", event.ticketId());
     }
 }

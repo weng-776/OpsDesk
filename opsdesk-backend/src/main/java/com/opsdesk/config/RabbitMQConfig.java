@@ -20,13 +20,15 @@ import org.springframework.context.annotation.Configuration;
  *   ├─ opsdesk.ticket.created.queue        ← ticket.created
  *   ├─ opsdesk.ticket.assigned.queue       ← ticket.assigned
  *   ├─ opsdesk.ticket.status.queue         ← ticket.status.changed
- *   └─ opsdesk.knowledge.index.queue       ← knowledge.index
+ *   ├─ opsdesk.knowledge.index.queue       ← knowledge.index
+ *   └─ opsdesk.notification.queue          ← notification.requested   （D9-03 新增）
  *
  * opsdesk.dlx (DirectExchange, durable)   ← 各业务队列的死信都进这里
  *   ├─ opsdesk.ticket.created.dlq
  *   ├─ opsdesk.ticket.assigned.dlq
  *   ├─ opsdesk.ticket.status.dlq
- *   └─ opsdesk.knowledge.index.dlq
+ *   ├─ opsdesk.knowledge.index.dlq
+ *   └─ opsdesk.notification.dlq                                   （D9-03 新增）
  * </pre>
  *
  * <b>关于死信 Routing Key 的约定（重要）</b>
@@ -57,18 +59,24 @@ public class RabbitMQConfig {
     public static final String RK_TICKET_ASSIGNED       = "ticket.assigned";
     public static final String RK_TICKET_STATUS_CHANGED = "ticket.status.changed";
     public static final String RK_KNOWLEDGE_INDEX       = "knowledge.index";
+    /** 通知请求（工单 D9-03 新增）：通知过一次 MQ，触发点一行不改 */
+    public static final String RK_NOTIFICATION_REQUESTED = "notification.requested";
 
     // ==================== 业务队列 ====================
     public static final String QUEUE_TICKET_CREATED  = "opsdesk.ticket.created.queue";
     public static final String QUEUE_TICKET_ASSIGNED = "opsdesk.ticket.assigned.queue";
     public static final String QUEUE_TICKET_STATUS   = "opsdesk.ticket.status.queue";
     public static final String QUEUE_KNOWLEDGE_INDEX = "opsdesk.knowledge.index.queue";
+    /** 通知请求队列（D9-03 新增） */
+    public static final String QUEUE_NOTIFICATION    = "opsdesk.notification.queue";
 
     // ==================== 死信队列 ====================
     public static final String DLQ_TICKET_CREATED  = "opsdesk.ticket.created.dlq";
     public static final String DLQ_TICKET_ASSIGNED = "opsdesk.ticket.assigned.dlq";
     public static final String DLQ_TICKET_STATUS   = "opsdesk.ticket.status.dlq";
     public static final String DLQ_KNOWLEDGE_INDEX = "opsdesk.knowledge.index.dlq";
+    /** 通知请求死信队列（D9-03 新增） */
+    public static final String DLQ_NOTIFICATION    = "opsdesk.notification.dlq";
 
     // ==================================================================
     //  交换机
@@ -117,6 +125,12 @@ public class RabbitMQConfig {
         return businessQueue(QUEUE_KNOWLEDGE_INDEX, RK_KNOWLEDGE_INDEX);
     }
 
+    /** 通知请求队列（工单 D9-03 新增；同样带原生死信参数） */
+    @Bean
+    public Queue notificationQueue() {
+        return businessQueue(QUEUE_NOTIFICATION, RK_NOTIFICATION_REQUESTED);
+    }
+
     // ==================================================================
     //  死信队列
     // ==================================================================
@@ -139,6 +153,12 @@ public class RabbitMQConfig {
     @Bean
     public Queue knowledgeIndexDlq() {
         return QueueBuilder.durable(DLQ_KNOWLEDGE_INDEX).build();
+    }
+
+    /** 通知请求死信队列（工单 D9-03 新增） */
+    @Bean
+    public Queue notificationDlq() {
+        return QueueBuilder.durable(DLQ_NOTIFICATION).build();
     }
 
     // ==================================================================
@@ -169,6 +189,13 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(queue).to(opsdeskTopicExchange).with(RK_KNOWLEDGE_INDEX);
     }
 
+    /** 通知请求队列 → opsdesk.topic（工单 D9-03 新增） */
+    @Bean
+    public Binding notificationBinding(@Qualifier("notificationQueue") Queue queue,
+                                      TopicExchange opsdeskTopicExchange) {
+        return BindingBuilder.bind(queue).to(opsdeskTopicExchange).with(RK_NOTIFICATION_REQUESTED);
+    }
+
     // ==================================================================
     //  绑定：DLQ → opsdesk.dlx（Routing Key = 原业务 Routing Key）
     // ==================================================================
@@ -195,6 +222,20 @@ public class RabbitMQConfig {
     public Binding knowledgeIndexDlqBinding(@Qualifier("knowledgeIndexDlq") Queue dlq,
                                            DirectExchange opsdeskDlxExchange) {
         return BindingBuilder.bind(dlq).to(opsdeskDlxExchange).with(RK_KNOWLEDGE_INDEX);
+    }
+
+    /**
+     * 通知请求死信队列 → opsdesk.dlx（工单 D9-03 新增）。
+     *
+     * <p>⚠️ 绑定用的是<b>原业务 Routing Key</b>（{@code notification.requested}），
+     * 与其它 DLQ 一致 —— 这样 D9-01 的那个 recoverer 才能通吃所有队列。
+     * 注意 {@code RepublishMessageRecoverer} 默认会给路由键加 {@code "error."} 前缀，
+     * 已在 {@code RabbitListenerConfig} 里用 {@code errorRoutingKeyPrefix("")} 清掉（D9-02 修的 bug）。
+     */
+    @Bean
+    public Binding notificationDlqBinding(@Qualifier("notificationDlq") Queue dlq,
+                                         DirectExchange opsdeskDlxExchange) {
+        return BindingBuilder.bind(dlq).to(opsdeskDlxExchange).with(RK_NOTIFICATION_REQUESTED);
     }
 
     // ==================================================================

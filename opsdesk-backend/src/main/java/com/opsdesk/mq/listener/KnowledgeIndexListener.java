@@ -36,6 +36,7 @@ public class KnowledgeIndexListener {
         guard.consume(RabbitMQConfig.QUEUE_KNOWLEDGE_INDEX, message, () ->
                 log.info("[MQ 消费] KnowledgeIndexEvent documentId={}", event.documentId()));
 
-        // TODO(D12): 文档向量化（切分 + embedding + 写 Milvus），注意上面的降级要求。
+        // TODO(D12-05): 文档向量化（切分 + embedding + 写 Milvus），注意上面的降级要求。
+        //   本单（D9-03）只留调用点，不跨工单实现 RAG。
     }
 }

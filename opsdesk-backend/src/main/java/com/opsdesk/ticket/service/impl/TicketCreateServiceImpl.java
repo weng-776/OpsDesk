@@ -216,9 +216,11 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         writeHistory(saved, creatorId);
         writeOutbox(saved);
 
-        // TODO(D6-04 follow-up / Day 9 MQ): 新单进入公共待受理池，但当前没有「公共池受理方」
-        // 这一条可投递的 userId。不能广播给所有 AGENT（未定义 fan-out 策略）；待 Day 9
-        // 由 MQ/公共池事件确定订阅者后再通知。
+        // 【为什么不在这里通知「受理方」（D9-03 定论，不再是 TODO）】
+        //   新单进的是公共待领取池（assignee_id = null），§3.10 里那个「受理方」在进池时尚不存在 ——
+        //   没有任何一个确定的 userId 可以投递。广播给所有 AGENT 属于未定义的 fan-out 策略，
+        //   所以此处不通知。通知发生在 **TICKET_ASSIGNED**（分派 / 接单那一刻，收件人 = 新处理人），
+        //   由 TicketFlowServiceImpl#assign / transfer 触发，经 NotificationEvent → MQ → notify 落库。
 
         log.info("[创建工单] id={} ticketNo={} creatorId={} departmentId={} priority={} status={}",
                 saved.getId(), saved.getTicketNo(), creatorId, saved.getDepartmentId(),

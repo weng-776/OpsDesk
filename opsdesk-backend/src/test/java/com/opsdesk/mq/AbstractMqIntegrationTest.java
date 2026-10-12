@@ -36,7 +36,7 @@ import org.springframework.boot.test.context.SpringBootTest;
  * 先跑子类的 {@code @AfterEach}（先摘 Appender，再停容器）。两边都是对的顺序。
  */
 @SpringBootTest
-abstract class AbstractMqIntegrationTest {
+public abstract class AbstractMqIntegrationTest {
 
     @Autowired
     private RabbitListenerEndpointRegistry listenerRegistry;

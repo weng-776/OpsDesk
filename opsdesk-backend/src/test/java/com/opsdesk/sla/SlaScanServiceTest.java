@@ -73,12 +73,21 @@ class SlaScanServiceTest {
 
     /** 被本类改过的工单快照：{@code id -> 原始列值}，{@code @AfterEach} 原样还原 */
     private final Map<Long, Map<String, Object>> before = new LinkedHashMap<>();
-    private Long notificationIdBaseline;
+
+    /**
+     * 跑用例前的 {@code event_outbox} 最大 id。
+     *
+     * <p>⚠️ D9-03 起通知走 MQ：扫描只把「通知请求」写进 {@code event_outbox}（PENDING），
+     * 真正落 {@code notification} 表要等投递器 + 消费者（测试里投递器是关的）。
+     * 所以这里断言的是「<b>已请求通知</b>」而不是「通知已落库」——
+     * 端到端那一段由 {@code NotificationMqMigrationTest} 覆盖。
+     */
+    private Long outboxIdBaseline;
 
     @BeforeEach
     void snapshotAndNormalize() {
-        notificationIdBaseline = jdbcTemplate.queryForObject(
-                "SELECT COALESCE(MAX(id), 0) FROM notification", Long.class);
+        outboxIdBaseline = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(id), 0) FROM event_outbox", Long.class);
         // 上一轮若异常退出，锁可能还留着 —— 清掉，否则本轮全被跳过
         redisTemplate.delete(LOCK_KEY);
         before.clear();
@@ -107,9 +116,9 @@ class SlaScanServiceTest {
             restoreRow(entry.getKey(), entry.getValue());
         }
         before.clear();
-        if (notificationIdBaseline != null) {
-            jdbcTemplate.update("DELETE FROM notification WHERE id > ?", notificationIdBaseline);
-            notificationIdBaseline = null;
+        if (outboxIdBaseline != null) {
+            jdbcTemplate.update("DELETE FROM event_outbox WHERE id > ?", outboxIdBaseline);
+            outboxIdBaseline = null;
         }
         redisTemplate.delete(LOCK_KEY);
     }
@@ -129,8 +138,8 @@ class SlaScanServiceTest {
         assertThat(warningFlag(ticketId)).as("§9.5：到达 WARNING 置 sla_warning_notified = 1")
                 .isEqualTo(1);
         assertThat(resolutionState(ticketId)).isEqualTo("WARNING");
-        assertThat(notificationCountSinceBaseline(ticketId, "SLA_WARNING"))
-                .as("D6-04：预警标志置位的同一事务写出一条真实通知")
+        assertThat(notificationRequestCountSinceBaseline(ticketId, "SLA_WARNING"))
+                .as("D9-03：预警标志置位的同一事务写出一条通知请求（PENDING）")
                 .isEqualTo(1);
 
         // ⭐ 第二轮：锁已释放，所以这一轮是真跑的 —— 挡住的只能是幂等标志位
@@ -141,8 +150,8 @@ class SlaScanServiceTest {
                 .as("第二轮：标志位挡住，不重复发通知").isZero();
         assertThat(warningFlag(ticketId)).as("标志位保持 1（扫描绝不清零）").isEqualTo(1);
         assertThat(resolutionState(ticketId)).as("状态没变 → 第二轮不写库").isEqualTo("WARNING");
-        assertThat(notificationCountSinceBaseline(ticketId, "SLA_WARNING"))
-                .as("重复扫描不能重复插入通知").isEqualTo(1);
+        assertThat(notificationRequestCountSinceBaseline(ticketId, "SLA_WARNING"))
+                .as("重复扫描不能重复写通知请求").isEqualTo(1);
     }
 
     // ==================== 验收 2：BREACHED 通知与状态落库 ====================
@@ -161,8 +170,8 @@ class SlaScanServiceTest {
         assertThat(resolutionState(ticketId)).isEqualTo("BREACHED");
         assertThat(warningFlag(ticketId))
                 .as("按 §9.5 字面：BREACHED 只置 breach 标志，不补置 warning 标志").isZero();
-        assertThat(notificationCountSinceBaseline(ticketId, "SLA_BREACHED"))
-                .as("D6-04：超时标志置位的同一事务写出一条真实通知")
+        assertThat(notificationRequestCountSinceBaseline(ticketId, "SLA_BREACHED"))
+                .as("D9-03：超时标志置位的同一事务写出一条通知请求（PENDING）")
                 .isEqualTo(1);
 
         assertThat(slaScanService.scan().breachNotified())
@@ -261,11 +270,19 @@ class SlaScanServiceTest {
                 Timestamp.valueOf(deadline), ticketId);
     }
 
-    private int notificationCountSinceBaseline(long ticketId, String type) {
+    /**
+     * 统计「本用例新产生的、针对该工单该类型的通知请求」条数（D9-03 起通知走 outbox）。
+     *
+     * <p>用 {@code JSON_EXTRACT} 精确取 payload 里的 {@code bizId} / {@code type}，
+     * 不用 {@code LIKE '%"bizId":1%'} —— 那种前缀匹配会把 {@code bizId=10} 也算进来。
+     */
+    private int notificationRequestCountSinceBaseline(long ticketId, String type) {
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM notification WHERE id > ? AND biz_type = 'TICKET' "
-                        + "AND biz_id = ? AND type = ?",
-                Integer.class, notificationIdBaseline, ticketId, type);
+                "SELECT COUNT(*) FROM event_outbox "
+                        + "WHERE id > ? AND event_type = 'NotificationRequestedEvent' "
+                        + "AND JSON_UNQUOTE(JSON_EXTRACT(CAST(payload AS JSON), '$.type')) = ? "
+                        + "AND JSON_EXTRACT(CAST(payload AS JSON), '$.bizId') = ?",
+                Integer.class, outboxIdBaseline, type, ticketId);
         return count == null ? 0 : count;
     }
 

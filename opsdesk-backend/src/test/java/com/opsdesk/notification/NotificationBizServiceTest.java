@@ -22,6 +22,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -257,17 +258,27 @@ class NotificationBizServiceTest {
     @DisplayName("§24.3 降级方案：发布 NotificationEvent → 监听器落到 notify → 通知可查")
     void 事件落点可用() {
         setCurrentUser(EMP_WANG);
-        long unreadBefore = notificationBizService.unreadCount().getCount();
+        long outboxBefore = maxId("event_outbox");
 
         eventPublisher.publishEvent(new NotificationEvent(EMP_WANG, NotificationType.TICKET_ASSIGNED,
                 "工单已分派给你", "工单 OD2026100600001 已分派给你处理。", "TICKET", 1L));
 
-        assertThat(notificationBizService.unreadCount().getCount())
-                .as("事件被监听器接住并落了库").isEqualTo(unreadBefore + 1);
+        // ⚠️ D9-03 起监听器**不再直接落库**：它只往 event_outbox 写一行 PENDING，
+        //    真正写 notification 表由 MQ 消费者完成（异步，且测试里投递器是关的）。
+        //    所以这里断言的是「通知请求已入本地消息表」——
+        //    端到端（outbox → MQ → 消费者 → 通知落库）由 NotificationMqMigrationTest 覆盖。
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT event_type, routing_key, status, payload FROM event_outbox WHERE id > ?", outboxBefore);
+        assertThat(rows).as("发布一次通知事件 → 恰好一行待投递").hasSize(1);
+        Map<String, Object> row = rows.get(0);
+        assertThat(row.get("event_type")).isEqualTo("NotificationRequestedEvent");
+        assertThat(row.get("routing_key")).isEqualTo("notification.requested");
+        assertThat(row.get("status")).as("§13.5：业务事务内先落 PENDING").isEqualTo("PENDING");
 
-        NotificationVO latest = notificationBizService.page(new NotificationQuery()).getList().get(0);
-        assertThat(latest.getType()).isEqualTo(NotificationType.TICKET_ASSIGNED);
-        assertThat(latest.getBizId()).isEqualTo(1L);
+        String payload = (String) row.get("payload");
+        assertThat(payload).as("§3.10 白名单内的类型").contains("\"type\":\"TICKET_ASSIGNED\"");
+        assertThat(payload).as("bizId 不能丢（前端跳转要用）").contains("\"bizId\":1");
+        assertThat(payload).contains("\"userId\":" + EMP_WANG);
     }
 
     // ==================== 工具 ====================
@@ -287,5 +298,10 @@ class NotificationBizServiceTest {
         List<Long> ids = jdbcTemplate.queryForList(
                 "SELECT department_id FROM `user` WHERE id = ?", Long.class, userId);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private long maxId(String table) {
+        Long max = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(id), 0) FROM " + table, Long.class);
+        return max == null ? 0L : max;
     }
 }
