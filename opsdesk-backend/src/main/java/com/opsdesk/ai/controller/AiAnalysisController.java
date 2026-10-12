@@ -1,21 +1,26 @@
 package com.opsdesk.ai.controller;
 
+import com.opsdesk.ai.dto.AiAdoptDTO;
+import com.opsdesk.ai.service.AiAdoptService;
 import com.opsdesk.ai.service.AiAnalysisQueryService;
 import com.opsdesk.ai.vo.AiAnalysisVO;
 import com.opsdesk.auth.annotation.RequirePermission;
 import com.opsdesk.common.Result;
 import com.opsdesk.common.constant.PermissionCodes;
+import com.opsdesk.ticket.vo.TicketDetailVO;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * AI 分析的触发与查询接口（工单 D10-04，API 文档 §11.1 / §8.13）
  *
  * <pre>
- * POST /api/ai/tickets/{ticketId}/analyze     §11.1 手动触发（重试 / 刷新）
- * GET  /api/tickets/{ticketId}/ai-analysis    §8.13 查询结果
+ * POST /api/ai/tickets/{ticketId}/analyze         §11.1 手动触发（重试 / 刷新）
+ * GET  /api/tickets/{ticketId}/ai-analysis        §8.13 查询结果
+ * POST /api/tickets/{ticketId}/ai-analysis/adopt  §8.14 采纳建议 —— AI 结果进入业务字段的<b>唯一入口</b>
  * </pre>
  *
  * <h2>⚠️ 两个端点前缀不同，所以类级没有 {@code @RequestMapping}</h2>
@@ -41,9 +46,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class AiAnalysisController {
 
     private final AiAnalysisQueryService aiAnalysisQueryService;
+    private final AiAdoptService aiAdoptService;
 
-    public AiAnalysisController(AiAnalysisQueryService aiAnalysisQueryService) {
+    public AiAnalysisController(AiAnalysisQueryService aiAnalysisQueryService,
+                                AiAdoptService aiAdoptService) {
         this.aiAnalysisQueryService = aiAnalysisQueryService;
+        this.aiAdoptService = aiAdoptService;
     }
 
     /**
@@ -68,5 +76,24 @@ public class AiAnalysisController {
     @GetMapping("/api/tickets/{ticketId}/ai-analysis")
     public Result<AiAnalysisVO> latest(@PathVariable long ticketId) {
         return Result.ok(aiAnalysisQueryService.latest(ticketId));
+    }
+
+    /**
+     * 采纳 AI 建议（§8.14）—— <b>AI 结果进入业务字段的唯一入口</b>。
+     *
+     * <p>🔴 §10.2：只有这里、且只有调用方<b>显式勾选</b>的那一项，才会改工单字段。
+     * 分析完成本身绝不自动覆盖（两个开关默认都是 {@code false}）。
+     *
+     * <p>⚠️ 请求体可省略（{@code required = false}）：不传就等于两个开关都 false，
+     * 接口只返回最新快照、不改任何字段 —— 这样「前端忘了传参」不会变成「误改工单」。
+     *
+     * <p>返回 {@code TicketDetailVO}：§8.14 写的 {@code TicketVO} 就是它
+     * （项目里没有单独的 {@code TicketVO} 类，§8.12 状态流转返回的也是这个类型），前端可直接刷新。
+     */
+    @RequirePermission(PermissionCodes.TICKET_PROCESS)
+    @PostMapping("/api/tickets/{ticketId}/ai-analysis/adopt")
+    public Result<TicketDetailVO> adopt(@PathVariable long ticketId,
+                                        @RequestBody(required = false) AiAdoptDTO dto) {
+        return Result.ok(aiAdoptService.adopt(ticketId, dto == null ? new AiAdoptDTO() : dto));
     }
 }
