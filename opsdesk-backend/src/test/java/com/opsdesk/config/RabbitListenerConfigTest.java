@@ -59,7 +59,11 @@ class RabbitListenerConfigTest {
 
         // 目标方法：每次调用都计数并抛异常
         AtomicInteger attempts = new AtomicInteger();
-        Message message = new Message("payload".getBytes(), new MessageProperties());
+        MessageProperties properties = new MessageProperties();
+        // ⚠️ 必须给 receivedRoutingKey：recoverer 用它当死信的路由键。
+        //    不设的话是 null，下面「路由键必须等于原键」的断言就失去了意义。
+        properties.setReceivedRoutingKey(RabbitMQConfig.RK_TICKET_CREATED);
+        Message message = new Message("payload".getBytes(), properties);
         Channel channel = mock(Channel.class);
 
         ContainerDelegate target = (ch, data) -> {
@@ -82,5 +86,14 @@ class RabbitListenerConfigTest {
         // 必须给匹配器显式类型：RabbitTemplate 有 send(String,String,Message)
         // 与 send(String,Message,CorrelationData) 两个 3 参重载，裸 any() 会歧义
         verify(rabbitTemplate).send(eq(RabbitMQConfig.DLX), (String) any(), (Message) any());
+
+        // ⭐ 路由键必须**原样**等于消息进来时的 Routing Key —— 不能带 "error." 前缀。
+        //    RepublishMessageRecoverer 默认会加 "error."，而 DLQ 绑定用的是原始 Routing Key
+        //    （RabbitMQConfig 的 ticketCreatedDlqBinding 绑的是 ticket.created），
+        //    于是死信在 opsdesk.dlx 上匹配不到任何绑定；又因为 mandatory=true，
+        //    消息被退回后**直接消失**（不进 DLQ、不报错）。D9-02 实测踩到，
+        //    这条断言就是防止有人把 errorRoutingKeyPrefix("") 改回去。
+        verify(rabbitTemplate).send(eq(RabbitMQConfig.DLX), eq(RabbitMQConfig.RK_TICKET_CREATED),
+                (Message) any());
     }
 }

@@ -4,6 +4,7 @@ import com.opsdesk.common.enums.OutboxStatus;
 import com.opsdesk.config.RabbitMQConfig;
 import com.opsdesk.mq.entity.EventOutbox;
 import com.opsdesk.mq.service.EventOutboxService;
+import com.opsdesk.mq.support.ConsumeIdempotencyGuard;
 import com.opsdesk.mq.support.OutboxPublisher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,11 +12,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.AmqpConnectException;
 import org.springframework.amqp.core.MessagePostProcessor;
-import org.springframework.amqp.core.QueueInformation;
-import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -36,6 +35,10 @@ import static org.mockito.Mockito.doThrow;
 /**
  * Outbox 投递器验收测试（工单 D9-01，规格基线 §13.5 / §13.6）
  *
+ * <h2>⚠️ 继承 {@link AbstractMqIntegrationTest}</h2>
+ * 验收 1 要断言「消息真的被消费者吃掉了」，而测试里监听器容器默认<b>不自动启动</b>
+ * （见基类注释：避免多个缓存上下文竞争消费同一批队列），必须由基类显式启停。
+ *
  * <h2>⚠️ 本类刻意不加 {@code @Transactional}</h2>
  * {@link OutboxPublisher#publishPending()} 自己开事务、自己提交，而且「认领」的语义
  * 依赖 {@code FOR UPDATE} 的行锁<b>持有到提交</b>。若测试挂一个外层事务，
@@ -49,8 +52,7 @@ import static org.mockito.Mockito.doThrow;
  * 所以用 spy 让 {@code convertAndSend} 抛 {@link AmqpConnectException} ——
  * 这与 broker 真的连不上时抛出的异常<b>完全同一类型</b>，走的是同一条重试分支。
  */
-@SpringBootTest
-class OutboxPublisherTest {
+class OutboxPublisherTest extends AbstractMqIntegrationTest {
 
     /** 与 publisher 的常量对齐 */
     private static final int MAX_RETRY = OutboxPublisher.MAX_RETRY;
@@ -65,15 +67,18 @@ class OutboxPublisherTest {
     private EventOutboxService eventOutboxService;
 
     @Autowired
-    private RabbitAdmin rabbitAdmin;
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private StringRedisTemplate redisTemplate;
 
     @Autowired
     private PlatformTransactionManager txManager;
 
     private long outboxIdBaseline;
+
+    /** 本类等到的消费幂等键，跑完清掉（Redis 不参与回滚，必须自己清） */
+    private final List<String> consumedKeys = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -84,15 +89,19 @@ class OutboxPublisherTest {
     void tearDown() {
         // 自造自清：只删本次用例新产生的行，绝不碰别的（真实业务写的 PENDING 行要留着）
         jdbcTemplate.update("DELETE FROM event_outbox WHERE id > ?", outboxIdBaseline);
+        if (!consumedKeys.isEmpty()) {
+            redisTemplate.delete(consumedKeys);
+            consumedKeys.clear();
+        }
     }
 
     // ==================== 验收 1：PENDING → 投递 → SENT ====================
 
     @Test
-    @DisplayName("验收1：PENDING 记录被投递后置 SENT、sent_at 非空，且消息真的进了对应队列")
+    @DisplayName("验收1：PENDING 记录被投递后置 SENT、sent_at 非空，且消息真的被消费者吃掉了")
     void 投递成功后置SENT且消息入队() {
-        int queueBefore = queueCount(RabbitMQConfig.QUEUE_TICKET_CREATED);
         long id = insertPending(RabbitMQConfig.RK_TICKET_CREATED, ticketCreatedPayload(1L));
+        String messageId = (String) rowOf(id).get("message_id");
 
         OutboxPublisher.PublishResult result = outboxPublisher.publishPending();
 
@@ -105,10 +114,13 @@ class OutboxPublisherTest {
         assertThat(row.get("retry_count")).as("成功不增加重试次数").isEqualTo(0);
         assertThat(row.get("last_error")).as("成功时不留失败原因").isNull();
 
-        // ⭐ 消息真的到了 MQ：队列长度增加（用增量而不是绝对值，避免受历史残留影响）
-        assertThat(queueCount(RabbitMQConfig.QUEUE_TICKET_CREATED))
-                .as("§13.5：投递成功 → 对应队列有消息")
-                .isGreaterThanOrEqualTo(queueBefore + 1);
+        // ⭐ 消息真的到了 MQ：D9-02 起队列上有了消费者，投出去就会被消费掉
+        //    ——所以**不能**再断言「队列长度增加」（消息可能已经被消费走了）。
+        //    改成断言「消费端留下了幂等键」，这比队列长度更强：它同时证明了
+        //    「消息投到了队列」+「消费者拿到并处理了」。
+        assertThat(awaitConsumed(messageId))
+                .as("§13.5+§13.6：消息应被消费者处理并写下幂等键 mq:consumed:{queue}:{messageId}")
+                .isTrue();
     }
 
     @Test
@@ -271,11 +283,30 @@ class OutboxPublisherTest {
                 "SELECT status, retry_count, last_error, sent_at, message_id FROM event_outbox WHERE id = ?", id);
     }
 
-    private int queueCount(String queueName) {
-        QueueInformation info = rabbitAdmin.getQueueInfo(queueName);
-        assertThat(info).as("队列 %s 应已由 RabbitMQConfig 声明", queueName).isNotNull();
-        Integer count = info.getMessageCount();
-        return count == null ? 0 : count;
+    /**
+     * 等消费端写下幂等键（§13.6）。
+     *
+     * <p>键格式 {@code mq:consumed:{consumerName}:{messageId}}，consumerName 就是队列名
+     * （见 {@code TicketCreatedListener}）。D9-02 之前队列上没有消费者，消息会一直堆着；
+     * 现在「投出去」的终态是「被消费掉」。
+     */
+    private boolean awaitConsumed(String messageId) {
+        String key = ConsumeIdempotencyGuard.KEY_PREFIX + RabbitMQConfig.QUEUE_TICKET_CREATED + ":" + messageId;
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
+                consumedKeys.add(key);
+                return true;
+            }
+            try {
+                Thread.sleep(200);
+            }
+            catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     /** 让投递抛「连不上 broker」——与真停机时抛出的异常同一类型 */

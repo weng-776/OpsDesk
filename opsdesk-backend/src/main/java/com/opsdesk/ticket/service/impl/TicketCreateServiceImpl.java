@@ -13,8 +13,8 @@ import com.opsdesk.common.enums.TicketHistoryAction;
 import com.opsdesk.common.enums.TicketPriority;
 import com.opsdesk.common.enums.TicketSource;
 import com.opsdesk.common.enums.TicketStatus;
-import com.opsdesk.config.RabbitMQConfig;
 import com.opsdesk.mq.entity.EventOutbox;
+import com.opsdesk.mq.event.TicketCreatedEvent;
 import com.opsdesk.mq.service.EventOutboxService;
 import com.opsdesk.sla.service.TicketSlaCalculator;
 import com.opsdesk.ticket.dto.TicketCreateDTO;
@@ -34,8 +34,6 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -86,9 +84,6 @@ public class TicketCreateServiceImpl implements TicketCreateService {
 
     /** 工单号冲突重试上限（§5.3：重试 3 次） */
     private static final int MAX_TICKET_NO_ATTEMPTS = 3;
-
-    /** Outbox 事件类型（§13.3） */
-    private static final String EVENT_TYPE_TICKET_CREATED = "TicketCreatedEvent";
 
     /** 幂等键被占且首次未完成时的提示 */
     private static final String MSG_IN_PROGRESS = "同一请求正在处理中，请勿重复提交";
@@ -305,32 +300,42 @@ public class TicketCreateServiceImpl implements TicketCreateService {
     /**
      * 写本地消息表（§13.5）：业务事务内落一行 PENDING。
      *
-     * <p>投递由定时任务负责（扫描 PENDING → 发 MQ → 置 SENT），
-     * <b>不在本单范围</b>（工单 D3-01 只要求「同事务写 event_outbox」）。
+     * <p>投递由定时任务负责（扫描 PENDING → 发 MQ → 置 SENT，见 D9-01 的 {@code OutboxPublisher}）。
+     *
+     * <h2>⚠️ 载荷直接序列化 {@link TicketCreatedEvent}，不再手搓 Map（D9-02 修正）</h2>
+     * D9-01 之前这里是手写的 {@code LinkedHashMap}，字段集合与事件类<b>对不上</b>：
+     * 少了 {@code title} / {@code category} / {@code type}，多了一个 {@code status}。
+     * 消费端按 {@link TicketCreatedEvent} 反序列化时，缺的三个字段会静默变成 {@code null} ——
+     * 而 AI 分析恰恰要用 {@code title}（§10.1 的输入就是标题 + 描述）。
+     *
+     * <p>改成序列化事件对象后，「payload 字段 = 事件字段」由类型系统保证，
+     * 以后给事件加字段也不会再出现这种两边各写一套的漂移。
      */
     private void writeOutbox(Ticket saved) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("ticketId", saved.getId());
-        payload.put("ticketNo", saved.getTicketNo());
-        payload.put("creatorId", saved.getCreatorId());
-        payload.put("departmentId", saved.getDepartmentId());
-        payload.put("priority", saved.getPriority() == null ? null : saved.getPriority().name());
-        payload.put("status", saved.getStatus() == null ? null : saved.getStatus().name());
+        TicketCreatedEvent event = new TicketCreatedEvent(
+                saved.getId(),
+                saved.getTicketNo(),
+                saved.getTitle(),
+                saved.getCreatorId(),
+                saved.getDepartmentId(),
+                saved.getPriority(),
+                saved.getCategory(),
+                saved.getType());
 
         String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(payload);
+            payloadJson = objectMapper.writeValueAsString(event);
         }
         catch (JsonProcessingException ex) {
             throw new BizException(ErrorCode.SYSTEM_ERROR, "事件载荷序列化失败", ex);
         }
 
         EventOutbox outbox = new EventOutbox();
-        outbox.setEventType(EVENT_TYPE_TICKET_CREATED);
+        outbox.setEventType(TicketCreatedEvent.EVENT_TYPE);
         // messageId 是消费端幂等键（§13.6），必须唯一（uk_outbox_message_id）
         outbox.setMessageId(UUID.randomUUID().toString());
-        // 路由键复用 RabbitMQConfig 的常量，不写裸字符串
-        outbox.setRoutingKey(RabbitMQConfig.RK_TICKET_CREATED);
+        // 路由键复用事件类/配置的常量，不写裸字符串
+        outbox.setRoutingKey(TicketCreatedEvent.ROUTING_KEY);
         outbox.setPayload(payloadJson);
         outbox.setStatus(OutboxStatus.PENDING);
         eventOutboxService.save(outbox);
