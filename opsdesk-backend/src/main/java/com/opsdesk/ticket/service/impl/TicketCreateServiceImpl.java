@@ -92,11 +92,12 @@ public class TicketCreateServiceImpl implements TicketCreateService {
     private static final TicketPriority DEFAULT_PRIORITY = TicketPriority.P3;
 
     /**
-     * 本入口的来源固定为 WEB（§3.9）。
+     * 默认来源：Web 页面创建（§3.9）。
      *
      * <p>API 文档 §8.1 的请求字段表里<b>没有</b> {@code source} —— 也就是说来源不由客户端指定，
-     * 而是「按入口写入」（§6.1）。{@code POST /api/tickets} 是 Web 入口 → {@code WEB}；
-     * {@code AI_ASSISTANT} / {@code ADMIN} 是别的调用方（AI 工具、管理端代提）。
+     * 而是「按入口写入」（§6.1）。{@code POST /api/tickets} 是 Web 入口 → {@code WEB}（本常量）；
+     * {@code AI_ASSISTANT} / {@code ADMIN} 是别的调用方（AI 工具、管理端代提），
+     * 由各自的调用方走【显式 source】的重载指定（D11-01 起）。
      */
     private static final TicketSource ENTRY_SOURCE = TicketSource.WEB;
 
@@ -131,6 +132,28 @@ public class TicketCreateServiceImpl implements TicketCreateService {
     @AuditLog(operation = AuditOperation.TICKET_CREATE, resourceType = AuditResourceType.TICKET,
             resourceId = "#result.id", skipIfAlreadyAudited = true)
     public TicketCreatedVO create(TicketCreateDTO dto, String idempotencyKey) {
+        return createInternal(dto, idempotencyKey, ENTRY_SOURCE);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    @AuditLog(operation = AuditOperation.TICKET_CREATE, resourceType = AuditResourceType.TICKET,
+            resourceId = "#result.id", skipIfAlreadyAudited = true)
+    public TicketCreatedVO create(TicketCreateDTO dto, String idempotencyKey, TicketSource source) {
+        // 传 null 时退回 WEB，而不是抛异常：来源不是「业务必填项」，缺省走最保守的那个
+        return createInternal(dto, idempotencyKey, source == null ? ENTRY_SOURCE : source);
+    }
+
+    /**
+     * 两个 {@code create} 入口的公共实现（幂等占位 → 落库 → 事务回调）。
+     *
+     * <h2>⚠️ 为什么是 private 方法，而不是「2 参版委托 3 参版」</h2>
+     * 同类内部的调用<b>不走 Spring 代理</b> —— 若让 2 参版去调 3 参版，
+     * 3 参版上的 {@code @Transactional} 与 {@code @AuditLog} 会<b>静默失效</b>
+     * （事务不生效、审计不落库，而且不报错）。
+     * 所以两个 public 入口各自带注解、各自被外部调用，公共逻辑下沉到这里。
+     */
+    private TicketCreatedVO createInternal(TicketCreateDTO dto, String idempotencyKey, TicketSource source) {
         boolean idempotent = StringUtils.hasText(idempotencyKey);
         AtomicReference<TicketCreatedVO> resultHolder = new AtomicReference<>();
 
@@ -150,7 +173,7 @@ public class TicketCreateServiceImpl implements TicketCreateService {
 
         // ⚠️ 私有方法、且**不带** @Transactional：与 create() 同一个事务，
         //    也不存在「自调用导致事务失效」的问题（那种坑出现在自己调自己的 @Transactional 方法上）
-        TicketCreatedVO result = doCreate(dto);
+        TicketCreatedVO result = doCreate(dto, source);
 
         resultHolder.set(result);
         return result;
@@ -181,7 +204,7 @@ public class TicketCreateServiceImpl implements TicketCreateService {
 
     // ==================== 事务内的实际创建 ====================
 
-    private TicketCreatedVO doCreate(TicketCreateDTO dto) {
+    private TicketCreatedVO doCreate(TicketCreateDTO dto, TicketSource source) {
         Long creatorId = UserContext.requireUserId();
 
         Ticket ticket = new Ticket();
@@ -197,7 +220,7 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         //    · 项目审查脚本的 M1「直接 setStatus」会把这一行报出来 —— 人工判定为**误报**，
         //      判断依据就是上面两条。真正要拦的是「对已存在的工单直接改状态」。
         ticket.setStatus(TicketStatus.OPEN);
-        ticket.setSource(ENTRY_SOURCE);
+        ticket.setSource(source);
         ticket.setCreatorId(creatorId);
         // 创建人所属部门「快照」（§6.1）—— 之后用户换部门也不改这张单的历史归属。
         // 直接从 UserContext 取：它由鉴权拦截器从权限缓存里带出来（D2-04 优化），零查询
