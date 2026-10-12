@@ -1,6 +1,7 @@
 package com.opsdesk.ai.controller;
 
 import com.opsdesk.ai.service.AiChatService;
+import com.opsdesk.ai.support.AiRateLimiter;
 import com.opsdesk.auth.annotation.RequirePermission;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
@@ -27,9 +28,9 @@ import org.springframework.web.bind.annotation.RestController;
  * {@link AiChatService}：{@code UserContext.get()} → {@code chat(currentUser, ...)}。
  * 这是 D11-01 设计片段里那条身份链路的**起点**。
  *
- * <h2>⚠️ 限流不在这里</h2>
- * §11.3 的「每用户 20 次/分钟」（Redis {@code rate:ai:{userId}}）属 D11-03，本单未实现。
- * 这里只做参数校验。
+ * <h2>⚠️ 限流不在这里（已于 D11-03 补上）</h2>
+ * §11.3 的「每用户 20 次/分钟」（Redis {@code rate:ai:{userId}}）由 {@link AiRateLimiter} 承担，
+ * 调用点在 {@code chat()} 里、进 service <b>之前</b> —— 顺序在代码里就能读出来，不依赖任何配置。
  */
 @RestController
 public class AiChatController {
@@ -38,9 +39,11 @@ public class AiChatController {
     private static final int MAX_PROMPT_LENGTH = 500;
 
     private final AiChatService aiChatService;
+    private final AiRateLimiter aiRateLimiter;
 
-    public AiChatController(AiChatService aiChatService) {
+    public AiChatController(AiChatService aiChatService, AiRateLimiter aiRateLimiter) {
         this.aiChatService = aiChatService;
+        this.aiRateLimiter = aiRateLimiter;
     }
 
     /**
@@ -70,6 +73,12 @@ public class AiChatController {
         if (trimmed.length() > MAX_PROMPT_LENGTH) {
             throw new BizException(ErrorCode.PARAM_INVALID, "提问内容不能超过 " + MAX_PROMPT_LENGTH + " 字");
         }
+
+        // 🔴 限流（§11.3「成本失控」，20 次/分钟/用户 → 42900）。
+        //    位置很讲究，两个要点：
+        //    ① 必须在进 service（也就是调 LLM）【之前】—— 否则成了事后记账，token 该烧还是烧了；
+        //    ② 放在参数校验【之后】—— 参数写错的请求不该消耗额度（与 D11-01 创建额度同一哲学）。
+        aiRateLimiter.check(currentUser.userId());
 
         return Result.ok(aiChatService.chat(currentUser, trimmed,
                 request == null ? null : request.sessionId()));
