@@ -40,7 +40,8 @@ import java.util.stream.Collectors;
  *   <li><b>入参里绝不出现身份</b> —— 没有 {@code userId} / {@code creatorId}；
  *       身份是<b>构造参数</b>，由调用方从 {@code UserContext} 捕获后传进来，
  *       <b>LLM 无从干预</b>（它只能填业务参数）；</li>
- *   <li><b>越权查询不泄露存在性</b> —— 一律返回「无权查看该工单」，与 §25.3 用例 #8 一致；</li>
+ *   <li><b>越权查询不泄露存在性</b> —— 「无权」与「不存在」返回<b>同一句话</b>（否则试着试几个 id
+ *       就能枚举出哪些工单存在），与 §25.3 用例 #8 一致；</li>
  *   <li><b>权限校验在代码层</b> —— 不依赖系统提示词（提示词可被注入，代码不会）。</li>
  * </ol>
  *
@@ -67,13 +68,18 @@ import java.util.stream.Collectors;
  * <h2>⚠️ 为什么要 catch 异常返回文案，而不是让它抛出去</h2>
  * Spring AI 的默认异常处理器（{@code DefaultToolExecutionExceptionProcessor}，{@code alwaysThrow=false}）
  * 会把异常信息当作工具返回值塞回模型 —— 那样模型看到的是 Java 异常栈，而不是「无权查看该工单」。
- * 越权、不存在这类业务异常尤其要转成人话（§11.3 明确要求返回「无权查看该工单」）。
+ * 越权、不存在这类业务异常尤其要转成人话，且<b>二者不可区分</b>（见 {@link #describeBizFailure}）。
  */
 @Slf4j
 public class TicketAiTools {
 
-    /** 越权统一说辞（§11.3：不泄露资源是否存在性） */
-    private static final String MSG_NO_PERMISSION = "无权查看该工单";
+    /**
+     * 查询失败的统一说辞（§11.3「不泄露存在性」）。
+     *
+     * <p>「不存在」与「无权」共用这一句 —— 理由见 {@link #describeBizFailure}。
+     * 保留「无权查看该工单」这个短语是为了与 §11.3 的措辞对齐。
+     */
+    private static final String MSG_NOT_FOUND_OR_DENIED = "无权查看该工单，或该工单不存在";
 
     /** 创建额度用尽时的统一说辞（两道闸门共用） */
     private static final String MSG_CREATE_LIMIT = "本次对话已经提交过工单了。为避免重复报修，不再创建第二张 —— "
@@ -367,17 +373,23 @@ public class TicketAiTools {
     /**
      * 业务异常 → 模型能理解的话。
      *
-     * <p>⚠️ 越权与不存在<b>返回不同文案</b>（「无权查看该工单」vs「工单不存在」）——
-     * 上游 {@code TicketQueryService#detail} 已经保证了「先判存在性（40400）再判可见性（40301）」的顺序，
-     * 所以从 40301 推不出「这个 id 存在」（§2.7 / §8.4）。
+     * <h2>🔴 40301（无权）与 40400（不存在）返回【同一句话】（D11-05 修正）</h2>
+     * 上游 {@code TicketQueryService#detail} 是「先查存在性（40400）→ 再判可见性（40301）」，
+     * 也就是说：<b>请求方拿到的错误码本身就能区分「不存在」与「存在但无权」</b> ——
+     * 换几个 id 试一下，就能把「库里哪些工单存在」枚举出来。
+     *
+     * <p>REST 层这么设计是有意的（前端要区分「id 打错了」和「没权限」，§2.7 也要求越权返回 40301）。
+     * 但 <b>Tool 层不能这么做</b>：它的调用者是一个<b>可能被诱导的模型</b>，
+     * 「让 AI 遍历 id 看哪些存在」是一种完全可行的注入方式。
+     * 所以这里把两种业务异常<b>压成同一句话</b>，从工具这一侧切断这条信息通道。
+     *
+     * <p>代价：用户把自己的工单 id 打错时，看到的提示也是「或该工单不存在」——
+     * 这是可接受的（那句话本身就把两种情况都说了），换来的是存在性不外泄。
      */
     private String describeBizFailure(BizException ex) {
         ErrorCode code = ex.getErrorCode();
-        if (code == ErrorCode.DATA_SCOPE_DENIED) {
-            return MSG_NO_PERMISSION;
-        }
-        if (code == ErrorCode.NOT_FOUND) {
-            return "没有找到这张工单，请确认 ID 是否正确。";
+        if (code == ErrorCode.DATA_SCOPE_DENIED || code == ErrorCode.NOT_FOUND) {
+            return MSG_NOT_FOUND_OR_DENIED;
         }
         return "查询失败：" + ex.getMessage();
     }

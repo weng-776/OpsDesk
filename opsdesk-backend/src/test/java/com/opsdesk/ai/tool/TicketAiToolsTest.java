@@ -100,8 +100,8 @@ class TicketAiToolsTest {
 
         String text = tools.queryTicket(String.valueOf(OTHER_TICKET_ID));
 
-        assertThat(text).as("§11.3：越权必须返回这句话，且不能出现「不存在」之类的存在性线索")
-                .isEqualTo("无权查看该工单");
+        assertThat(text).as("§11.3：越权返回统一文案（与「不存在」不可区分）")
+                .isEqualTo("无权查看该工单，或该工单不存在");
     }
 
     @Test
@@ -114,13 +114,14 @@ class TicketAiToolsTest {
     }
 
     @Test
-    @DisplayName("验收1 补充：工单不存在 → 与越权返回不同文案（两者语义必须能分清）")
-    void 工单不存在() {
+    @DisplayName("验收1 补充：工单不存在 → 与越权返回【同一文案】（D11-05：否则能靠它枚举出哪些工单存在）")
+    void 工单不存在与越权不可区分() {
         when(ticketQueryService.detail(anyLong())).thenThrow(BizException.notFound("工单不存在"));
 
         String text = tools.queryTicket("12345");
 
-        assertThat(text).contains("没有找到这张工单").isNotEqualTo("无权查看该工单");
+        assertThat(text).as("40301 与 40400 被压成同一句话，模型无法靠它区分「存在」与「不存在」")
+                .isEqualTo("无权查看该工单，或该工单不存在");
     }
 
     // ==================== 验收 2：queryMyTickets 无参 ====================
