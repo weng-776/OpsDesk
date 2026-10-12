@@ -9,6 +9,7 @@ import com.opsdesk.ai.prompt.TicketAnalyzePrompts;
 import com.opsdesk.ai.service.AiAnalysisService;
 import com.opsdesk.ai.service.TicketAnalyzeService;
 import com.opsdesk.ai.support.AiChatGateway;
+import com.opsdesk.ai.support.RuleBasedAnalyzer;
 import com.opsdesk.ai.vo.AiAnalysisVO;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.enums.AiAnalysisStatus;
@@ -36,13 +37,16 @@ import java.util.Locale;
  *   ├─ gateway.call(...)  ── 走 D10-01 的出口：30s 总超时 + 统一 50300 语义
  *   │     └─ 返回无法解析 → 重试 1 次（§10.3 第 1 条）
  *   ├─ 逐字段校验枚举白名单（§10.3 第 2 条）→ 非法就回退为原工单值 + 告警
- *   └─ 落库 SUCCESS；任何异常 → 落库 FAILED（不向外抛，§10.2）
+ *   ├─ 成功 → 落库 SUCCESS
+ *   └─ 任何异常（含超时 / 开关关闭）→ <b>§10.4 降级为关键词规则引擎</b>并落库；
+ *        规则引擎也失败 → 才落 FAILED（全程不向外抛，§10.2）
  * </pre>
  *
  * <h2>🔴 三条不能违反的约定</h2>
  * <ol>
- *   <li><b>绝不把异常抛给调用方</b>（§10.2）—— 整个方法体被 try-catch 兜住，失败也落 FAILED 记录；</li>
- *   <li><b>失败也要落库</b>（§24.3）—— 否则事后排查时「什么都没有」，连失败都看不见；</li>
+ *   <li><b>绝不把异常抛给调用方</b>（§10.2）—— 整个方法体被 try-catch 兜住；</li>
+ *   <li><b>失败也要落库</b>（§10.4 / §24.3）—— 先降级到规则引擎，连规则都失败才落 FAILED。
+ *       总之不能让「这张工单为什么没有分类」变成一个查不到的问题；</li>
  *   <li><b>白名单校验只用枚举 {@code valueOf}</b>，不写字符串数组比对（§0 约定）。</li>
  * </ol>
  */
@@ -94,9 +98,12 @@ public class TicketAnalyzeServiceImpl implements TicketAnalyzeService {
             return toVO(aiAnalysisService.getById(entity.getId()));
         }
         catch (Exception ex) {
-            // §10.2：AI 失败不影响工单主流程 —— 这里绝不能往外抛
-            log.error("[AI 工单分析] 分析失败，落一条 FAILED 记录（不影响工单主流程）。ticketId={}", ticketId, ex);
-            return saveFailedQuietly(ticketId, model, rawText);
+            // §10.4 降级：AI 不可用（开关关闭 / 超时 / 报错）→ 改用关键词规则兜底。
+            // ⚠️ 三种触发情况（① opsdesk.ai.enabled=false ② 调用异常 ③ 超时）在这里汇成一处：
+            //    ① 与 ③ 由 D10-01 的出口统一抛 BizException(50300)，② 是各类上游异常。
+            log.warn("[AI 工单分析] AI 不可用，降级为关键词规则引擎（§10.4）。ticketId={} 原因={}",
+                    ticketId, ex.toString());
+            return fallbackToRules(ticket, rawText);
         }
     }
 
@@ -200,6 +207,39 @@ public class TicketAnalyzeServiceImpl implements TicketAnalyzeService {
             log.warn("[AI 工单分析] {} 取值不在白名单，已回退为原工单值。ticketId={} 非法值={} 回退值={}",
                     field, ticketId, rawValue, fallback);
             return fallback;
+        }
+    }
+
+    // ==================== §10.4 降级 ====================
+
+    /**
+     * 规则引擎兜底：产出结果 → 走<b>同一套</b>校验与落库 → 返回。
+     *
+     * <p>⚠️ 这里刻意复用 {@link #buildSuccess}：降级产出的 {@link AiAnalysisResult}
+     * 与 AI 产出的<b>是同一个类型</b>，所以枚举白名单校验、字段截断、JSON 序列化都不用重写，
+     * 上层拿到的 {@code AiAnalysisVO} 也没有任何区别 —— 不需要为"降级"加分支。
+     *
+     * <p>⚠️ {@code status} 仍然是 {@code SUCCESS}：业务上这次分析<b>确实成功了</b>
+     * （拿到了分类与优先级），只是产出方式不同；区分方式看 {@code model = rule-based}。
+     * 把它们都标成 FAILED 会让"AI 分析成功率"这类统计完全失真。
+     *
+     * <p>⚠️ 降级也必须落库（§24.3 原文：「规则引擎兜底，{@code ai_analysis} 仍落库」）——
+     * 否则事后看这张工单，会发现"既没有 AI 结果、也没有规则结果"，完全不知道分类是哪来的。
+     */
+    private AiAnalysisVO fallbackToRules(Ticket ticket, String rawText) {
+        try {
+            AiAnalysisResult result = RuleBasedAnalyzer.analyze(ticket.getTitle(), ticket.getDescription());
+            // model 标记为 rule-based：事后排查分析质量时，第一眼就能区分 AI 产出与规则产出
+            AiAnalysis entity = buildSuccess(ticket, new Attempt(result, rawText, RuleBasedAnalyzer.MODEL));
+            aiAnalysisService.save(entity);
+            log.info("[AI 工单分析] 已用规则引擎兜底并落库。ticketId={} category={} priority={}",
+                    ticket.getId(), entity.getCategory(), entity.getPriority());
+            return toVO(aiAnalysisService.getById(entity.getId()));
+        }
+        catch (Exception ex) {
+            // 连规则兜底都失败（多半是数据库问题）→ 落一条 FAILED，仍然不向外抛（§10.2）
+            log.error("[AI 工单分析] 规则引擎兜底也失败，落 FAILED 记录。ticketId={}", ticket.getId(), ex);
+            return saveFailedQuietly(ticket.getId(), null, rawText);
         }
     }
 

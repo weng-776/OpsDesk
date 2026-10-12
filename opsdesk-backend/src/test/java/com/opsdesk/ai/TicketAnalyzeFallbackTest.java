@@ -116,8 +116,8 @@ class TicketAnalyzeFallbackTest {
     }
 
     @Test
-    @DisplayName("验收3：LLM 不可用 → 落一条 FAILED 记录，且调用方不抛异常（§10.2）")
-    void LLM不可用时落FAILED且不抛异常() {
+    @DisplayName("D10-03 起：LLM 不可用 → 降级为规则引擎，落 SUCCESS 记录且调用方不抛异常（§10.4 / §10.2）")
+    void LLM不可用时降级为规则引擎() {
         doThrow(BizException.serviceUnavailable("模拟 AI 不可用"))
                 .when(aiChatGateway).call(anyString(), any());
 
@@ -125,12 +125,13 @@ class TicketAnalyzeFallbackTest {
                 .as("§10.2：AI 失败绝不能影响工单主流程").doesNotThrowAnyException();
 
         Map<String, Object> row = latestRow();
-        assertThat(row.get("status")).as("§24.3：失败也要落库，否则排查时什么都看不到")
-                .isEqualTo(AiAnalysisStatus.FAILED.name());
-        assertThat(row.get("category")).as("§10.3：失败记录不展示建议内容").isNull();
-        assertThat(row.get("priority")).isNull();
-        assertThat(row.get("summary")).isNull();
-        assertThat(row.get("suggestions")).isNull();
+        assertThat(row.get("status"))
+                .as("§10.4：降级产出也算分析成功（只是方式不同），标 FAILED 会让成功率统计失真")
+                .isEqualTo(AiAnalysisStatus.SUCCESS.name());
+        assertThat(row.get("model")).as("model=rule-based，事后可区分 AI 产出与规则产出")
+                .isEqualTo("rule-based");
+        assertThat(row.get("category")).as("§10.4：任何情况下工单都要有分类").isNotNull();
+        assertThat(row.get("priority")).as("§10.4：priority 默认 P3").isEqualTo("P3");
     }
 
     @Test
@@ -155,17 +156,19 @@ class TicketAnalyzeFallbackTest {
     }
 
     @Test
-    @DisplayName("§10.3 第 1 条：重试后仍无法解析 → FAILED")
-    void 重试仍失败则落FAILED() {
+    @DisplayName("§10.3 第 1 条：重试后仍无法解析 → 降级为规则引擎（D10-03 起不再直接判 FAILED）")
+    void 重试仍失败则降级() {
         doThrow(new IllegalStateException("模拟 JSON 解析失败 1"))
                 .doThrow(new IllegalStateException("模拟 JSON 解析失败 2"))
                 .when(aiChatGateway).call(anyString(), any());
 
         assertThatCode(() -> ticketAnalyzeService.analyze(TICKET_ID)).doesNotThrowAnyException();
 
-        assertThat(latestRow().get("status"))
-                .as("两次都解析不出来 → FAILED（重试只给 1 次）")
-                .isEqualTo(AiAnalysisStatus.FAILED.name());
+        Map<String, Object> row = latestRow();
+        assertThat(row.get("status"))
+                .as("重试两次都解析不出来 → 走规则引擎兜底，而不是让工单没有分类")
+                .isEqualTo(AiAnalysisStatus.SUCCESS.name());
+        assertThat(row.get("model")).isEqualTo("rule-based");
     }
 
     @Test
@@ -190,7 +193,7 @@ class TicketAnalyzeFallbackTest {
 
     private Map<String, Object> latestRow() {
         return jdbcTemplate.queryForMap(
-                "SELECT status, type, category, priority, summary, suggestions "
+                "SELECT status, model, type, category, priority, summary, suggestions "
                         + "FROM ai_analysis WHERE ticket_id = ? ORDER BY id DESC LIMIT 1", TICKET_ID);
     }
 
