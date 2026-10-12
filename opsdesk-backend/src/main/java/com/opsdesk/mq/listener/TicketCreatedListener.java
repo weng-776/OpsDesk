@@ -1,5 +1,6 @@
 package com.opsdesk.mq.listener;
 
+import com.opsdesk.ai.service.TicketAnalyzeService;
 import com.opsdesk.config.RabbitMQConfig;
 import com.opsdesk.mq.event.TicketCreatedEvent;
 import com.opsdesk.mq.support.ConsumeIdempotencyGuard;
@@ -9,11 +10,14 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
 /**
- * {@code ticket.created} 队列消费者（工单 D9-02，规格基线 §13.2 / §13.4 / §13.6）
+ * {@code ticket.created} 队列消费者（工单 D9-02 建立；D10-04 接上 AI 分析）
  *
- * <h2>⚠️ 本单只做骨架 + 日志</h2>
- * 真正的业务接线（AI 分析、通知受理方）是 <b>D9-03</b> 的交付物。
- * 本单的目标是让链路先通起来：消息能进来、幂等生效、traceId 串得上、失败能进 DLQ。
+ * <h2>本类做两件事</h2>
+ * <ol>
+ *   <li><b>消费幂等 + traceId 透传</b>（D9-02）：消息能进来、重复投递只执行一次、失败能进 DLQ；</li>
+ *   <li><b>触发 AI 分析</b>（D10-04）：见 {@link #requestAiAnalysis}。</li>
+ * </ol>
+ * <p>⚠️ 通知受理方<b>不在</b>本类：建单进公共池时没有确定的收件人（D9-03 的结论，不广播所有 AGENT）。
  *
  * <h2>⚠️ 消费端只抛异常，绝不碰 Channel（§13.4 约束 1）</h2>
  * 禁止 {@code basicAck} / {@code basicNack} / {@code basicReject}。
@@ -34,9 +38,12 @@ import org.springframework.stereotype.Component;
 public class TicketCreatedListener {
 
     private final ConsumeIdempotencyGuard guard;
+    private final TicketAnalyzeService ticketAnalyzeService;
 
-    public TicketCreatedListener(ConsumeIdempotencyGuard guard) {
+    public TicketCreatedListener(ConsumeIdempotencyGuard guard,
+                                 TicketAnalyzeService ticketAnalyzeService) {
         this.guard = guard;
+        this.ticketAnalyzeService = ticketAnalyzeService;
     }
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_TICKET_CREATED)
@@ -53,22 +60,31 @@ public class TicketCreatedListener {
     }
 
     /**
-     * AI 分析的调用点（§13.3：{@code TicketCreatedEvent → AI 分析}）。
+     * AI 分析的调用点（§13.3：{@code TicketCreatedEvent → AI 分析}，D10-04 接线）。
      *
-     * <p>⚠️ 本单（D9-03）只留调用点，<b>不实现</b> —— AI 分析是 Day 10 的工单（D10-04），
-     * 跨工单写 AI 调用会破坏「一张工单一个 commit」的边界。
+     * <p>§10.1 要求「工单创建后<b>异步</b>触发，不阻塞主流程」—— 异步性就来自这里：
+     * 建单接口只写 {@code event_outbox}（同事务、极快），真正耗时的分析跑在消费者线程上。
      *
-     * <p>D10-04 接线时注意：
+     * <h2>⚠️ 消费端只负责"叫一声"，成败交给 analyze 自己兜</h2>
+     * D9-03 在这里留注释时担心的是「AI 抛异常 → 被重试 3 次 → 进 DLQ，看起来像代码 bug」。
+     * D10-02/03 已经把这件事解决了：{@code TicketAnalyzeService.analyze} <b>永不抛异常</b> ——
      * <ul>
-     *   <li>AI 是<b>只做建议</b>、不自动覆盖工单字段（§10.2），结果写 {@code ai_analysis} 表；</li>
-     *   <li>外部依赖（Milvus / LLM）不可用时<b>不能把异常抛出去</b>（本批特有约束 6）：
-     *       抛出去会被重试 3 次然后进 DLQ，看起来像代码 bug，实际是环境没起。
-     *       应先探测可用性，不可用则降级（50300 / 记 warn 后正常消费）；</li>
-     *   <li>输出必须落在 §3 枚举白名单内，否则回退默认值并记告警（§10.3）。</li>
+     *   <li>AI 正常 → 落 {@code SUCCESS}；</li>
+     *   <li>AI 返回非法枚举 → 回退为原工单值，仍 {@code SUCCESS}；</li>
+     *   <li>AI 不可用 / 超时 / 开关关闭 → <b>规则引擎兜底</b>（§10.4），仍 {@code SUCCESS}；</li>
+     *   <li>连规则兜底都失败（多半 DB 问题）→ 落 {@code FAILED} 记录。</li>
      * </ul>
+     * 所以这里<b>不需要</b>再包一层 try-catch，也不会污染队列的重试/DLQ 机制。
+     *
+     * <h2>⚠️ 阻塞消费线程是已知代价（本单给的取舍）</h2>
+     * 分析最长会占用消费者线程 30s（D10-01 的总超时上限），而当前
+     * {@code prefetch=1} 且未配 {@code concurrency}（默认单线程）→ 串行。
+     * 意味着分析期间 {@code opsdesk.ticket.created.queue} 里的其它消息在排队。
+     * <p><b>取舍</b>：V1 先按现状跑通（建单峰值不高，且分析失败会走规则引擎、不长期占线程），
+     * 若观察到积压再优化 —— 可选方案是给分析单开一条队列（改 {@code RabbitMQConfig} 加队列 + DLQ + 绑定），
+     * 或给本队列调大 {@code concurrency}。两条都涉及拓扑/配置变更，不在本单范围内。
      */
     private void requestAiAnalysis(TicketCreatedEvent event) {
-        // TODO(D10-04): 触发 AI 分析（调 AiAnalysisService，注意上面的降级与白名单要求）
-        log.debug("[MQ 消费] 待 D10-04 接线：AI 分析 ticketId={}", event.ticketId());
+        ticketAnalyzeService.analyze(event.ticketId());
     }
 }
