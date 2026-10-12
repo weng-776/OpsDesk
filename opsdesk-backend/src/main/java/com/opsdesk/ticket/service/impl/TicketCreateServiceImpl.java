@@ -143,6 +143,7 @@ public class TicketCreateServiceImpl implements TicketCreateService {
                     return reservation.cached();
                 }
                 case IN_PROGRESS -> throw new BizException(ErrorCode.CONFLICT, MSG_IN_PROGRESS);
+                //事务提交回调该方法
                 case FIRST -> registerIdempotencyCallback(idempotencyKey, resultHolder);
             }
         }
@@ -154,7 +155,6 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         resultHolder.set(result);
         return result;
     }
-
     /**
      * 注册「提交后写结果 / 回滚后释放占位」的事务回调。
      *
@@ -211,9 +211,11 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         if (saved == null) {
             throw new BizException(ErrorCode.SYSTEM_ERROR, "工单落库后查不到，请重试");
         }
-
+        //计算sla
         applySla(saved);
+        //工单历史
         writeHistory(saved, creatorId);
+        //写本地消息表
         writeOutbox(saved);
 
         // 【为什么不在这里通知「受理方」（D9-03 定论，不再是 TODO）】

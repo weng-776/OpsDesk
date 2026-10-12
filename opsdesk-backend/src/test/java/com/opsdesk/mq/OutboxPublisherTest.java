@@ -12,6 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.AmqpConnectException;
 import org.springframework.amqp.core.MessagePostProcessor;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -311,9 +312,13 @@ class OutboxPublisherTest extends AbstractMqIntegrationTest {
 
     /** 让投递抛「连不上 broker」——与真停机时抛出的异常同一类型 */
     private void stubBrokerUnreachable() {
+        // ⚠️ D9-05 起投递用的是**5 参重载**（多一个 CorrelationData，好让 ConfirmCallback 能关联到
+        //    messageId）——stub 必须跟着换成 5 参，否则匹配不上、spy 不抛异常、
+        //    消息被真的投出去，用例会以「预期失败却成功」的形式红（踩过）。
         doThrow(new AmqpConnectException(new ConnectException("Connection refused (模拟 broker 停机)")))
                 .when(rabbitTemplate)
-                .convertAndSend(anyString(), anyString(), any(), any(MessagePostProcessor.class));
+                .convertAndSend(anyString(), anyString(), any(), any(MessagePostProcessor.class),
+                        any(CorrelationData.class));
     }
 
     private long maxId(String table) {

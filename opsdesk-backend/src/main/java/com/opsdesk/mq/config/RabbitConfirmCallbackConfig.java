@@ -31,12 +31,14 @@ import org.springframework.util.StringUtils;
  * {@code RabbitTemplateCustomizer} 由 Boot 在创建 RabbitTemplate 时调用，
  * 只是「在既有配置上再加两笔」，不动其它任何设置。
  *
- * <h2>⚠️ 已知局限：ConfirmCallback 里拿不到 messageId</h2>
- * 回调的 {@link CorrelationData} 只有在发送时显式传入才有值。当前
- * {@code OutboxPublisher} 用的是不带 CorrelationData 的 {@code convertAndSend} 重载
- * （该文件不在 D9-04 的允许改动内），所以 nack 日志只能记 cause，
- * 无法直接关联到具体那条 {@code event_outbox}。
- * 要让 confirm 可关联，给投递器补一个 {@code new CorrelationData(outbox.getMessageId())} 即可（一行）。
+ * <h2>⚠️ 与 Outbox 的分工：回调负责「可见」，投递成功由「等 confirm」定义</h2>
+ * 回调本身不重试 —— 「投递失败 → {@code retry_count++} → 下一轮重投」由 {@code OutboxPublisher} 负责。
+ * 但「投递成功」不能只看 {@code convertAndSend} 是否返回（那只表示消息进了本地 channel）：
+ * 投递器会传 {@link CorrelationData}（id = {@code event_outbox.message_id}）并等
+ * {@link CorrelationData#getFuture()}，拿到 broker <b>ack 且未被退回</b>才置 SENT。
+ * 否则 broker 拒收或路由不到时，回调虽已记 error，outbox 仍会置 SENT → 事件静默丢失。
+ *
+ * <p>好处之一：nack 日志现在能带出具体 messageId（D9-04 当时「拿不到 messageId」的局限已消除）。
  */
 @Slf4j
 @Configuration

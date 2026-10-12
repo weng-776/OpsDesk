@@ -14,6 +14,7 @@ import org.springframework.amqp.AmqpConnectException;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.AmqpIOException;
 import org.springframework.amqp.core.MessageDeliveryMode;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Outbox 投递器（工单 D9-01，规格基线 §13.5 / §13.6）
@@ -175,19 +177,40 @@ public class OutboxPublisher {
      */
     private void send(EventOutbox outbox, String traceId) throws Exception {
         JsonNode payload = objectMapper.readTree(outbox.getPayload());
+        CorrelationData correlationData = new CorrelationData(outbox.getMessageId());
 
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE, outbox.getRoutingKey(), payload, message -> {
-            message.getMessageProperties().setMessageId(outbox.getMessageId());
-            message.getMessageProperties().setHeader(HEADER_TRACE_ID, traceId);
-            // D9-05：死信管理接口要显示 eventType；消息体里没有这个字段，
-            // 从 event_outbox.event_type 复制到消息头
-            message.getMessageProperties().setHeader(HEADER_EVENT_TYPE, outbox.getEventType());
-            // §13.4 消息不丢：持久化（Spring AMQP 默认也是 PERSISTENT，这里显式写出来）
-            message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
-            return message;
-        });
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE, outbox.getRoutingKey(), payload,
+                message -> {
+                    message.getMessageProperties().setMessageId(outbox.getMessageId());
+                    message.getMessageProperties().setHeader(HEADER_TRACE_ID, traceId);
+                    // D9-05：死信管理接口要显示 eventType；消息体里没有这个字段，
+                    // 从 event_outbox.event_type 复制到消息头
+                    message.getMessageProperties().setHeader(HEADER_EVENT_TYPE, outbox.getEventType());
+                    // §13.4 消息不丢：持久化（Spring AMQP 默认也是 PERSISTENT，这里显式写出来）
+                    message.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+                    return message;
+                },
+                // D9-04 原先已有：ConfirmCallback 用 CorrelationData 关联 nack 与具体 outbox.message_id
+                correlationData);
 
-        log.debug("[Outbox 投递] 已发送 id={} eventType={} routingKey={} messageId={}",
+        // publisher-confirm-type=correlated：convertAndSend 返回只表示「已入本地 channel」，
+        //    不代表 broker 已 ack。要等待 confirm，才能保证只有拿到 broker ack 才把 outbox 标 SENT。
+        //    否则 broker 拒收时 ConfirmCallback 虽记了 error，publishPending 仍会 markSent → 事件丢失。
+        CorrelationData.Confirm confirm = correlationData.getFuture().get(10, TimeUnit.SECONDS);
+        if (!confirm.isAck()) {
+            throw new AmqpException("broker NACK: " + confirm.getReason());
+        }
+        // mandatory=true + returns callback：路由不到队列时 broker 会退回。
+        // 必须在 markSent 之前查 returned；否则 Confirm 可能 ack（交换机收到了）、但无 binding，
+        // 回调另线程才到 → 我们先置 SENT → 事件静默丢失。ReturnedMessage 与 correlation 一起关联。
+        if (correlationData.getReturned() != null) {
+            var returned = correlationData.getReturned();
+            throw new AmqpException("broker returned unroutable message: exchange="
+                    + returned.getExchange() + " routingKey=" + returned.getRoutingKey()
+                    + " replyCode=" + returned.getReplyCode() + " replyText=" + returned.getReplyText());
+        }
+
+        log.debug("[Outbox 投递] 已发送并获 broker confirm id={} eventType={} routingKey={} messageId={}",
                 outbox.getId(), outbox.getEventType(), outbox.getRoutingKey(), outbox.getMessageId());
     }
 
