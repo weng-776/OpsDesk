@@ -75,6 +75,10 @@ public class TicketAiTools {
     /** 越权统一说辞（§11.3：不泄露资源是否存在性） */
     private static final String MSG_NO_PERMISSION = "无权查看该工单";
 
+    /** 创建额度用尽时的统一说辞（两道闸门共用） */
+    private static final String MSG_CREATE_LIMIT = "本次对话已经提交过工单了。为避免重复报修，不再创建第二张 —— "
+            + "如需追加信息，建议在已有工单下补充说明。";
+
     /** 「我的工单」最多返回几条 —— 用户可能有几百张，全塞给模型会爆上下文 */
     private static final int MY_TICKETS_LIMIT = 10;
 
@@ -99,21 +103,54 @@ public class TicketAiTools {
     private final TicketCreateService ticketCreateService;
 
     /**
-     * 防滥用闸门：一个工具实例最多创建 1 张工单（§11.3「成本失控」）。
+     * 防滥用闸门：一个工具实例最多创建 1 张工单。
      *
      * <p>调用方是「每次 AI 调用 new 一个实例」→ 本闸门等价于「单次调用最多创建 1 张」。
-     * 真正的<b>对话级</b>限制（按 {@code sessionId} 计数）要等 D11-02 有 sessionId 才能做。
+     * 真正的<b>对话级</b>限制由 {@link CreateQuota} 承担（D11-02 补：一场对话最多 1 张）。
      */
     private final AtomicBoolean createdOnce = new AtomicBoolean(false);
+
+    /**
+     * 对话级创建额度；<b>可为 null</b>（表示不做对话级限制，只有实例级闸门）。
+     *
+     * <p>D11-01 只有实例级上限 —— 而实例是每次请求新建的，用户在同一场对话里连问三次
+     * 就能建 3 张。D11-02 起由调用方传入基于 `conversationId` 的额度（Redis SETNX + TTL）。
+     */
+    private final CreateQuota createQuota;
 
     public TicketAiTools(UserContext.CurrentUser currentUser,
                          TicketQueryService ticketQueryService,
                          TicketCreateService ticketCreateService) {
+        this(currentUser, ticketQueryService, ticketCreateService, null);
+    }
+
+    public TicketAiTools(UserContext.CurrentUser currentUser,
+                         TicketQueryService ticketQueryService,
+                         TicketCreateService ticketCreateService,
+                         CreateQuota createQuota) {
         // fail-fast：没有身份的工具体等于「匿名调用业务接口」，宁可构造时就炸
         this.currentUser = Objects.requireNonNull(currentUser,
                 "currentUser 不能为空：AI 工具必须以当前登录用户身份执行（§11.3）");
         this.ticketQueryService = ticketQueryService;
         this.ticketCreateService = ticketCreateService;
+        this.createQuota = createQuota;
+    }
+
+    /**
+     * 对话级「最多创建 1 张工单」的额度闸门。
+     *
+     * <p>做成嵌套接口而不是单独一个文件：它只服务于本工具的创建动作，
+     * 且实现依赖具体的会话标识（Redis key 里含 `conversationId`），放在这里语义最完整。
+     */
+    @FunctionalInterface
+    public interface CreateQuota {
+
+        /**
+         * 尝试占用一次创建额度。
+         *
+         * @return {@code true} = 额度可用（本次允许创建）；{@code false} = 本对话额度已用尽
+         */
+        boolean tryAcquire();
     }
 
     // ==================== 工具 1：查单张工单 ====================
@@ -249,10 +286,14 @@ public class TicketAiTools {
             return "工单分类不合法：「" + safe(category) + "」。只能是 " + codes(TicketCategory.class) + " 之一。";
         }
 
-        // ② 防滥用：一个实例只放行一次（等价于「单次 AI 调用最多建 1 张」）
+        // ② 防滥用：两道闸门，且都放在参数校验【之后】—— 参数写错不该消耗额度
+        //    闸门 1（对话级）：同一场对话最多建 1 张（D11-02 补，由调用方注入基于 conversationId 的额度）
+        if (createQuota != null && !createQuota.tryAcquire()) {
+            return MSG_CREATE_LIMIT;
+        }
+        //    闸门 2（实例级）：同一实例最多建 1 张（防模型在一次回答里连续调两次）
         if (!createdOnce.compareAndSet(false, true)) {
-            return "本次对话已经提交过工单了。为避免重复报修，不再创建第二张 —— "
-                    + "如需追加信息，建议在已有工单下补充说明。";
+            return MSG_CREATE_LIMIT;
         }
 
         // ③ 真正创建（身份与来源由服务端决定）
