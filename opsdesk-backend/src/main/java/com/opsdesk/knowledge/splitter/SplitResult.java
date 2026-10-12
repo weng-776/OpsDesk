@@ -14,6 +14,17 @@ package com.opsdesk.knowledge.splitter;
  *       {@code [start, end)}。<b>不含复读前缀</b></td></tr>
  * </table>
  *
+ * <h2>长度口径（★务必用对）</h2>
+ * <pre>
+ *   content.length() ≤ chunkSize            ← 恒成立：标题复读前缀会从 500 的预算里扣掉
+ *   span() = end - start ≤ content.length()  ← span 不含复读前缀
+ * </pre>
+ * <ul>
+ *   <li>判断「这一片是否超过 500 字」→ 用 {@code content.length()} 或 {@code span()} <b>都可以</b>；</li>
+ *   <li>想知道「这一片覆盖了原文多长」→ 只能用 {@code span()}。</li>
+ * </ul>
+ * 两者的差值就是复读标题的长度（含 1 个换行）；无标题的节、以及每节的首片，差值为 0。
+ *
  * <h2>⚠️ 为什么 {@code content} 与 {@code [start, end)} 不是「相等」而是「以…结尾」</h2>
  * 「每片复读章节标题」是有意为之（用户拍板：每片自带章节上下文，召回质量更好），
  * 所以第 2 片起 {@code content} 的前缀（标题行）<b>不属于</b>{@code [start, end)} 这段原文。
@@ -38,7 +49,7 @@ public record SplitResult(int index, String content, int start, int end) {
 
     /**
      * 该片段在原文中覆盖的字符数（{@code end - start}）——
-     * <b>不含</b>复读前缀，所以不等于 {@code content.length()}。
+     * <b>不含</b>复读前缀，所以不会大于 {@code content.length()}。
      */
     public int span() {
         return end - start;

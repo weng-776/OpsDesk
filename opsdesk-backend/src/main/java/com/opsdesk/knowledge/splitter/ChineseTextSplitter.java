@@ -45,13 +45,16 @@ import java.util.Set;
  *   <li><b>跨节不重叠</b>：标题边界是语义硬边界，若跨节重叠，同一段文字会同时归到两个标题的语义下，
  *       削弱「按标题切」的收益。</li>
  *   <li><b>每片复读章节标题</b>（用户拍板）：该节被切成 N 片时，{@code ## 标题} 出现在每一片开头，
- *       让每片自带上下文。首片不重复拼（它的区间本来就含标题行）。详见 {@link SplitResult} 的字段说明。</li>
+ *       让每片自带上下文。首片不重复拼（它的区间本来就含标题行）。
+ *       ★前缀长度会从 {@code chunkSize} 预算里扣掉，保证 {@code content.length() ≤ chunkSize}。
+ *       详见 {@link SplitResult} 的字段说明。</li>
  * </ol>
  *
  * <h2>不变量</h2>
  * <ul>
  *   <li>{@code overlap < chunkSize}（否则步进 ≤ 0 → 死循环）；</li>
- *   <li>片段长度恒 ≤ {@code chunkSize}；</li>
+ *   <li>片段长度恒 ≤ {@code chunkSize} —— <b>{@code content.length()} 与 {@code span()} 都满足</b>
+ *       （标题复读前缀占预算，见上）；</li>
  *   <li>不产生空片段（纯空白片段被丢弃）—— 空白不算「内容丢失」；</li>
  *   <li>超长单行（无换行）能正常切完 —— 实现<b>不按换行切</b>，换行只是「标点对齐」的候选之一。</li>
  * </ul>
@@ -230,10 +233,17 @@ public class ChineseTextSplitter {
         int start = section.start();
 
         while (start < section.end()) {
-            int end = (section.end() - start <= chunkSize)
+            boolean firstOfSection = (start == section.start());
+
+            // ★标题复读前缀的长度要从 chunkSize 预算里扣掉 —— 这样 content.length() 恒 ≤ chunkSize，
+            //   任何人按 content 长度做「≤ 500」的判断都不会踩坑（见 SplitResult 的字段说明）。
+            int prefixLength = prefixLengthOf(section, firstOfSection, chunkSize, overlap);
+            int budget = chunkSize - prefixLength;
+
+            int end = (section.end() - start <= budget)
                     // 剩余不足一片 → 全部收尾（不再对齐标点，否则会为了一个标点把尾巴切碎）
                     ? section.end()
-                    : cutPoint(text, start, start + chunkSize, overlap);
+                    : cutPoint(text, start, start + budget, overlap);
 
             // 收紧到非空白区间：首尾空白既不进 content，也不计入 [start, end)
             int from = start;
@@ -248,10 +258,7 @@ public class ChineseTextSplitter {
             if (from < to) {
                 String body = text.substring(from, to);
                 // 首片：区间本身就含标题行，直接用 body；后续片：手工复读标题作为前缀
-                boolean firstOfSection = (start == section.start());
-                String content = (section.header() != null && !firstOfSection)
-                        ? section.header() + "\n" + body
-                        : body;
+                String content = (prefixLength > 0) ? section.header() + "\n" + body : body;
                 out.add(new SplitResult(out.size(), content, from, to));
             }
 
@@ -260,6 +267,25 @@ public class ChineseTextSplitter {
             }
             start = end - overlap;
         }
+    }
+
+    /**
+     * 本片需要复读的标题前缀长度（含换行符），不需要复读时返回 0。
+     *
+     * <ul>
+     *   <li>首片<b>不</b>复读 —— 它的区间本身就包含标题行；</li>
+     *   <li>无标题的节（纯 txt 文档、或节前的内容）也不复读；</li>
+     *   <li>若「前缀 + overlap + 1 &gt; chunkSize」，复读会把正文预算压到无法形成有效步进
+     *       → <b>放弃复读</b>，优先保证 {@code content.length() ≤ chunkSize} 这条硬约束
+     *       （宁可这一片少一个标题，也不能出一条超长片段或陷入死循环）。</li>
+     * </ul>
+     */
+    private int prefixLengthOf(Section section, boolean firstOfSection, int chunkSize, int overlap) {
+        if (section.header() == null || firstOfSection) {
+            return 0;
+        }
+        int candidate = section.header().length() + 1; // + "\n"
+        return (candidate + overlap + 1 <= chunkSize) ? candidate : 0;
     }
 
     /**

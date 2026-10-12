@@ -75,9 +75,13 @@ class ChineseTextSplitterTest {
                 .as("每片都要带本节标题，作为自带上下文")
                 .startsWith("# 网络排查\n")
                 .doesNotContain("## 另一节"));
-        assertThat(results).allSatisfy(r -> assertThat(r.span())
-                .as("size=500 约束的是【正文区间】，标题复读前缀是附加上下文（见 SplitResult 字段说明）")
-                .isLessThanOrEqualTo(500));
+        assertThat(results).allSatisfy(r -> {
+            assertThat(r.content().length())
+                    .as("★口径同步：content 总长（含复读前缀）也 ≤ 500")
+                    .isLessThanOrEqualTo(500);
+            assertThat(r.span()).as("正文区间不含前缀，故不会更长")
+                    .isLessThanOrEqualTo(r.content().length());
+        });
         assertCoversOriginal(text, results);
     }
 
@@ -210,7 +214,68 @@ class ChineseTextSplitterTest {
 
         List<SplitResult> results = splitter.split(text);
 
-        assertThat(results).allSatisfy(r -> assertThat(r.span()).isLessThanOrEqualTo(500));
+        assertThat(results).allSatisfy(r -> {
+            assertThat(r.span()).isLessThanOrEqualTo(500);
+            assertThat(r.content().length()).isLessThanOrEqualTo(500);
+        });
+    }
+
+    @Test
+    @DisplayName("★长度口径：content.length() 恒 ≤ 500（标题复读前缀占预算），span() 恒 ≤ content.length()")
+    void 长度口径() {
+        List<String> samples = List.of(
+                "# 标题\n" + "正文。".repeat(300),
+                "## 二级标题\n" + "内容内容。".repeat(200) + "\n### 更深一层\n" + "更深内容。".repeat(100),
+                "内容".repeat(600),
+                "# 短标题\n短",
+                "# 网络排查\n排查步骤说明".repeat(200) + "\n## 另一节\n短内容");
+
+        for (String sample : samples) {
+            List<SplitResult> results = splitter.split(sample);
+            assertThat(results).isNotEmpty();
+            assertThat(results).allSatisfy(r -> {
+                assertThat(r.content().length())
+                        .as("片 %d 的 content 长度必须 ≤ 500（否则「按 content 判断」会踩坑）", r.index())
+                        .isLessThanOrEqualTo(500);
+                assertThat(r.span()).isLessThanOrEqualTo(r.content().length());
+            });
+        }
+    }
+
+    @Test
+    @DisplayName("口径细节：带标题的非首片，正文预算被前缀占掉（span < 500），content 仍 ≤ 500")
+    void 带标题的后续片正文预算被前缀占用() {
+        String header = "# 网络排查";
+        String text = header + "\n" + "排查步骤说明。".repeat(200);
+
+        List<SplitResult> results = splitter.split(text);
+        List<SplitResult> laterPieces = results.stream().filter(r -> r.index() > 0).toList();
+
+        assertThat(laterPieces).as("这一节 1400+ 字，必然被切成多片").isNotEmpty();
+        assertThat(laterPieces).allSatisfy(r -> {
+            assertThat(r.content()).startsWith(header + "\n");
+            assertThat(r.span())
+                    .as("正文预算 = 500 - 前缀长度(%d)", header.length() + 1)
+                    .isLessThanOrEqualTo(500 - (header.length() + 1));
+            assertThat(r.content().length()).isLessThanOrEqualTo(500);
+        });
+    }
+
+    @Test
+    @DisplayName("标题超长（复读会挤爆预算）→ 放弃复读，优先保证 content ≤ 500 且不死循环")
+    void 标题超长时放弃复读() {
+        String longHeader = "# " + "超长标题".repeat(120); // 前缀长度 483 + 50 + 1 > 500
+        String text = longHeader + "\n" + "正文内容。".repeat(300);
+
+        List<SplitResult> results = splitter.split(text);
+
+        assertThat(results).isNotEmpty();
+        assertThat(results).allSatisfy(r -> assertThat(r.content().length())
+                .as("宁可这一片少一个标题，也不能出超长片段")
+                .isLessThanOrEqualTo(500));
+        assertThat(results.stream().skip(1).toList()).as("后续片不再复读超长标题")
+                .allSatisfy(r -> assertThat(r.content()).doesNotStartWith(longHeader));
+        assertCoversOriginal(text, results);
     }
 
     // ==================== 参数校验（防死循环） ====================
