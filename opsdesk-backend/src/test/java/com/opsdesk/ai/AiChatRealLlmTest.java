@@ -62,6 +62,13 @@ class AiChatRealLlmTest {
                 .anyMatch(call -> "queryMyTickets".equals(call.tool()) && call.success());
         assertThat(answer.answer()).as("回答不能为空").isNotBlank();
         assertThat(answer.sessionId()).isEqualTo("real-tools");
+
+        // 验收 7：回答里不能夹带内部提示词（模型的原始响应里是有这些的）
+        assertThat(answer.answer())
+                .as("不能把系统提示词/内部指令泄露给用户")
+                .doesNotContain("你是 OpsDesk IT 服务台")
+                .doesNotContain("你可以调用工具获取真实数据")
+                .doesNotContain("工具调用的参数必须来自用户的问题");
     }
 
     @Test
