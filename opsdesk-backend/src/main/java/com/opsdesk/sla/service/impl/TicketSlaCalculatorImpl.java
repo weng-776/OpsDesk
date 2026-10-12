@@ -39,14 +39,7 @@ public class TicketSlaCalculatorImpl implements TicketSlaCalculator {
             return null;
         }
 
-        // 命中 idx_sla_priority(priority, status)。
-        // 用 getOne(wrapper) 而**不是** getOne(wrapper, false)：DDL 上有
-        // 唯一索引 uk_sla_active_priority(active_priority) 保证「同一 priority 只有一条 ACTIVE」，
-        // 真查出多行说明数据被绕过约束写坏了 —— 宁可抛也不要静默取第一行（known-traps #2）
-        SlaPolicy policy = slaPolicyService.getOne(new LambdaQueryWrapper<SlaPolicy>()
-                .eq(SlaPolicy::getPriority, priority)
-                .eq(SlaPolicy::getStatus, POLICY_STATUS_ACTIVE));
-
+        SlaPolicy policy = activePolicyOf(priority);
         if (policy == null) {
             log.warn("[SLA] 优先级 {} 没有 ACTIVE 的策略，本次不计算 deadline", priority);
             return null;
@@ -56,6 +49,63 @@ public class TicketSlaCalculatorImpl implements TicketSlaCalculator {
                 policy.getId(),
                 createdAt.plusMinutes(policy.getResponseMinutes()),
                 createdAt.plusMinutes(policy.getResolutionMinutes()));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>算法见接口注释（差值平移）。判空一律返回 {@code null}，让调用方决定「不重算」怎么记录。
+     */
+    @Override
+    public RescheduleResult rescheduleForPriorityChange(Long oldPolicyId, TicketPriority newPriority,
+                                                        LocalDateTime currentResolutionDeadline) {
+        // 没有基准就无从平移（创建时就没有 SLA 或数据被清空）—— 不猜、不硬造
+        if (newPriority == null || currentResolutionDeadline == null) {
+            return null;
+        }
+        if (oldPolicyId == null) {
+            log.warn("[SLA 重算] 工单没有冻结的政策版本 id，无法计算差值，保持原解决时限不动");
+            return null;
+        }
+
+        SlaPolicy oldPolicy = slaPolicyService.getById(oldPolicyId);
+        if (oldPolicy == null || oldPolicy.getResolutionMinutes() == null) {
+            log.warn("[SLA 重算] 取不到旧策略或旧 resolution_minutes（policyId={}），保持原解决时限不动",
+                    oldPolicyId);
+            return null;
+        }
+
+        SlaPolicy newPolicy = activePolicyOf(newPriority);
+        if (newPolicy == null || newPolicy.getResolutionMinutes() == null) {
+            log.warn("[SLA 重算] 新优先级 {} 没有 ACTIVE 策略，保持原解决时限不动", newPriority);
+            return null;
+        }
+
+        // 新旧命中同一版策略 → 分钟数必然相同，平移量为 0，不必写库
+        if (newPolicy.getId().equals(oldPolicy.getId())) {
+            return null;
+        }
+
+        long deltaMinutes = (long) newPolicy.getResolutionMinutes() - oldPolicy.getResolutionMinutes();
+        LocalDateTime newDeadline = currentResolutionDeadline.plusMinutes(deltaMinutes);
+        log.info("[SLA 重算] 优先级变更：policyId {} → {}，解决时限平移 {} 分钟（{} → {}）",
+                oldPolicy.getId(), newPolicy.getId(), deltaMinutes,
+                currentResolutionDeadline, newDeadline);
+        return new RescheduleResult(newPolicy.getId(), newDeadline);
+    }
+
+    /**
+     * 取某优先级的当前 ACTIVE 策略；没有则返回 {@code null}。
+     *
+     * <p>命中 {@code idx_sla_priority(priority, status)}。
+     * 用 {@code getOne(wrapper)} 而<b>不是</b> {@code getOne(wrapper, false)}：DDL 上有
+     * 唯一索引 {@code uk_sla_active_priority(active_priority)} 保证「同一 priority 只有一条 ACTIVE」，
+     * 真查出多行说明数据被绕过约束写坏了 —— 宁可抛也不要静默取第一行（known-traps #2）。
+     */
+    private SlaPolicy activePolicyOf(TicketPriority priority) {
+        return slaPolicyService.getOne(new LambdaQueryWrapper<SlaPolicy>()
+                .eq(SlaPolicy::getPriority, priority)
+                .eq(SlaPolicy::getStatus, POLICY_STATUS_ACTIVE));
     }
 
     @Override

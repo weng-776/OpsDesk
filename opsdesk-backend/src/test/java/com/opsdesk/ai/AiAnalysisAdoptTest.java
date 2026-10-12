@@ -21,6 +21,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -134,6 +136,62 @@ class AiAnalysisAdoptTest {
         Map<String, Object> ticket = ticketRow(VPN_TICKET_ID);
         assertThat(ticket.get("category")).isEqualTo("ACCOUNT");
         assertThat(ticket.get("priority")).isEqualTo("P1");
+    }
+
+    // ==================== §9.9：采纳优先级连带重算解决时限 ====================
+
+    @Test
+    @DisplayName("§9.9：采纳优先级 → 解决时限按新旧策略分钟数之差平移，policyId 指向新策略，response_deadline 不动")
+    void 采纳优先级连带重算解决时限() throws Exception {
+        insertAnalysis(VPN_TICKET_ID, "NETWORK", "P1", "SUCCESS");
+
+        Map<String, Object> before = slaRow(VPN_TICKET_ID);
+        assertThat(before.get("priority_value")).as("前提：工单原优先级是 P2").isEqualTo("P2");
+
+        mockMvc.perform(post("/api/tickets/{id}/ai-analysis/adopt", VPN_TICKET_ID)
+                        .header(HttpHeaders.AUTHORIZATION, tokenOf(ADMIN_ID))
+                        .contentType("application/json")
+                        .content("{\"adoptPriority\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.priority").value("P1"));
+
+        Map<String, Object> after = slaRow(VPN_TICKET_ID);
+
+        // ① policyId 必须指向新优先级的策略版本 —— deadline 换了却仍指向旧版本会自相矛盾
+        //    ⚠️ sla_policy_id 是 BIGINT UNSIGNED，JDBC 拿到的是 BigInteger：
+        //       直接和 long 比会报出很误导人的 "expected: 1L but was: 1" → 统一走 Number.longValue()
+        assertThat(((Number) after.get("sla_policy_id")).longValue()).as("policy 应指向 P1 的 ACTIVE 策略")
+                .isEqualTo(policyIdOf("P1"));
+
+        // ② 解决时限按「新旧策略分钟数之差」平移（P2 480 → P1 240，即提前 240 分钟）
+        //    ⚠️ queryForMap 拿到的 datetime 是 LocalDateTime（不是 java.sql.Timestamp）
+        long deltaMinutes = Duration.between(
+                (LocalDateTime) before.get("resolution_deadline"),
+                (LocalDateTime) after.get("resolution_deadline")).toMinutes();
+        assertThat(deltaMinutes).as("差值平移：新分钟数 - 旧分钟数")
+                .isEqualTo(resolutionMinutesOf("P1") - resolutionMinutesOf("P2"));
+
+        // ③ response_deadline 不动 —— §9.4 已有「响应发生在早期」的先例，重算会改写历史判定
+        assertThat(after.get("response_deadline")).as("响应截止不应被优先级采纳改动")
+                .isEqualTo(before.get("response_deadline"));
+    }
+
+    @Test
+    @DisplayName("§9.9：不采纳优先级（只采纳分类）→ SLA 一个字都不动")
+    void 不采纳优先级则SLA不动() throws Exception {
+        insertAnalysis(VPN_TICKET_ID, "ACCOUNT", "P1", "SUCCESS");
+
+        Map<String, Object> before = slaRow(VPN_TICKET_ID);
+
+        mockMvc.perform(post("/api/tickets/{id}/ai-analysis/adopt", VPN_TICKET_ID)
+                        .header(HttpHeaders.AUTHORIZATION, tokenOf(ADMIN_ID))
+                        .contentType("application/json")
+                        .content("{\"adoptCategory\":true}"))
+                .andExpect(status().isOk());
+
+        Map<String, Object> after = slaRow(VPN_TICKET_ID);
+        assertThat(after.get("sla_policy_id")).isEqualTo(before.get("sla_policy_id"));
+        assertThat(after.get("resolution_deadline")).isEqualTo(before.get("resolution_deadline"));
     }
 
     // ==================== 验收 3：都不采纳 ====================
@@ -272,6 +330,29 @@ class AiAnalysisAdoptTest {
 
     private Map<String, Object> ticketRow(long ticketId) {
         return jdbcTemplate.queryForMap("SELECT category, priority, status FROM ticket WHERE id = ?", ticketId);
+    }
+
+    /** SLA 相关列 + 当前优先级（§9.9 重算断言用） */
+    private Map<String, Object> slaRow(long ticketId) {
+        return jdbcTemplate.queryForMap(
+                "SELECT priority AS priority_value, sla_policy_id, response_deadline, resolution_deadline "
+                        + "FROM ticket WHERE id = ?", ticketId);
+    }
+
+    /** 取某优先级当前 ACTIVE 策略的 id（不写死数字，避免种子调整后测试悄悄失效） */
+    private long policyIdOf(String priority) {
+        Long id = jdbcTemplate.queryForObject(
+                "SELECT id FROM sla_policy WHERE priority = ? AND status = 'ACTIVE'", Long.class, priority);
+        assertThat(id).as("种子里 %s 应有 ACTIVE 策略", priority).isNotNull();
+        return id;
+    }
+
+    private int resolutionMinutesOf(String priority) {
+        Integer minutes = jdbcTemplate.queryForObject(
+                "SELECT resolution_minutes FROM sla_policy WHERE priority = ? AND status = 'ACTIVE'",
+                Integer.class, priority);
+        assertThat(minutes).isNotNull();
+        return minutes;
     }
 
     private List<Map<String, Object>> adoptAudits(long ticketId) {

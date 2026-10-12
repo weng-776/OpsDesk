@@ -14,6 +14,7 @@ import com.opsdesk.common.enums.AuditOperation;
 import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.TicketCategory;
 import com.opsdesk.common.enums.TicketPriority;
+import com.opsdesk.sla.service.TicketSlaCalculator;
 import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
@@ -45,15 +46,22 @@ import java.util.Objects;
  *   <li><b>值合法</b>：采纳值必须非空且是 §3 枚举常量（见 {@link #requireCategory}）。</li>
  * </ol>
  *
- * <h2>⚠️ 已知不一致：采纳优先级后 <b>不重算 SLA</b>（本单的明确取舍）</h2>
- * §9 的 SLA 是「工单<b>创建时</b>按当时的 priority 计算并落库」。
- * 采纳把 priority 改掉之后，{@code response_deadline} / {@code resolution_deadline} 仍按旧优先级，
- * 于是「优先级是 P1、时限却是 P3 的」这种组合是可能出现的 —— <b>这是刻意留的已知不一致</b>，
- * 不是漏做：规格没有要求重算，重算会牵动 SLA 计算与超时通知（§9.5 的扫描会立刻按新时限判 BREACHED），
- * 属于另一单的范围。
+ * <h2>⚠️ 采纳优先级会连带重算「解决时限」（§9.9 / D10-05 补单）</h2>
+ * §9 的 deadline 是「工单<b>创建时</b>按当时的 priority 计算并落库」的，采纳把 priority 改掉之后，
+ * 若不重算就会出现「优先级是 P1、时限却是 P3 的」这种自相矛盾的组合。
  *
- * <p>→ 对外要能说清这个取舍：<b>「改优先级」与「重算 SLA」是两件独立的事</b>，
- * 第一版只做前者，把后者留在 SLA 模块统一处理。
+ * <p>所以采纳优先级时同步做一次<b>差值平移</b>（详见 {@link TicketSlaCalculator#rescheduleForPriorityChange}）：
+ * <pre>
+ * new_resolution_deadline = old_resolution_deadline + (新策略分钟数 - 旧策略分钟数)
+ * </pre>
+ * <ul>
+ *   <li><b>为什么不按 {@code created_at} 绝对重算</b>：那会抹掉 §9.4 的暂停顺延与 §9.6 reopen 的新基准；</li>
+ *   <li><b>{@code response_deadline} 不动</b>：§9.4 已有「响应发生在早期」的先例，且重算会改写历史判定；</li>
+ *   <li><b>状态列与通知标志位不动</b>：SLA 状态只由 §9.5 的定时扫描写入（单一职责），下一轮自然收敛；</li>
+ *   <li><b>取不到策略时不重算</b>：只记 warn，保持原时限 —— 与 D3-01「缺策略不阻断主流程」一致。</li>
+ * </ul>
+ * 重算会体现在 {@code audit_log} 的 before/after 快照里（{@code TicketAuditSnapshotProvider}
+ * 已包含 {@code slaPolicyId} / {@code resolutionDeadline}），无需额外埋点。
  *
  * <h2>⚠️ 审计操作码：复用 {@code TICKET_PRIORITY_CHANGE}</h2>
  * §3.11 的操作码是白名单，里面<b>没有</b> {@code TICKET_CATEGORY_CHANGE}，也不建议为此新增枚举值。
@@ -73,15 +81,18 @@ public class AiAdoptServiceImpl implements AiAdoptService {
     private final TicketDataScopeHelper dataScopeHelper;
     private final AiAnalysisService aiAnalysisService;
     private final TicketQueryService ticketQueryService;
+    private final TicketSlaCalculator ticketSlaCalculator;
 
     public AiAdoptServiceImpl(TicketService ticketService,
                               TicketDataScopeHelper dataScopeHelper,
                               AiAnalysisService aiAnalysisService,
-                              TicketQueryService ticketQueryService) {
+                              TicketQueryService ticketQueryService,
+                              TicketSlaCalculator ticketSlaCalculator) {
         this.ticketService = ticketService;
         this.dataScopeHelper = dataScopeHelper;
         this.aiAnalysisService = aiAnalysisService;
         this.ticketQueryService = ticketQueryService;
+        this.ticketSlaCalculator = ticketSlaCalculator;
     }
 
     /**
@@ -121,7 +132,9 @@ public class AiAdoptServiceImpl implements AiAdoptService {
             TicketPriority priority = requirePriority(analysis.getPriority());
             if (!Objects.equals(ticket.getPriority(), priority)) {
                 ticket.setPriority(priority);
-                // ⚠️ 这里刻意不重算 SLA —— 见类注释的「已知不一致」
+                // §9.9：优先级变了就必须把解决时限一起挪，否则会留下
+                // 「P1 优先级 + P3 时限」这种自相矛盾的组合（详见类注释）
+                applySlaReschedule(ticket);
                 changed = true;
             }
         }
@@ -199,5 +212,30 @@ public class AiAdoptServiceImpl implements AiAdoptService {
             throw new BizException(ErrorCode.PARAM_INVALID, "AI 分析没有给出优先级建议，无法采纳");
         }
         return priority;
+    }
+
+    /**
+     * §9.9：优先级变更后平移解决时限，并把 {@code sla_policy_id} 指到新优先级的策略版本。
+     *
+     * <p>⚠️ 必须在 {@code ticket.setPriority(新值)} <b>之后</b>调用 —— 内部要用新优先级查策略；
+     * 而 {@code ticket.getSlaPolicyId()} 仍是旧版本 id（差值平移需要它当基准）。
+     *
+     * <p>重算不了时（无基准 / 缺策略）<b>只记 warn、不改 SLA</b>，不影响本次采纳本身 ——
+     * 「优先级改了但没有合适的新策略」不该让整个采纳动作失败。
+     * 具体落库由调用方在自己的 {@code updateById} 里一并完成（同一个 UPDATE + 同一把乐观锁）。
+     */
+    private void applySlaReschedule(Ticket ticket) {
+        TicketSlaCalculator.RescheduleResult result = ticketSlaCalculator.rescheduleForPriorityChange(
+                ticket.getSlaPolicyId(), ticket.getPriority(), ticket.getResolutionDeadline());
+        if (result == null) {
+            log.warn("[AI 采纳] 优先级已变更，但解决时限未重算（无基准或缺 ACTIVE 策略）。ticketId={} priority={}",
+                    ticket.getId(), ticket.getPriority());
+            return;
+        }
+        Long oldPolicyId = ticket.getSlaPolicyId();
+        ticket.setSlaPolicyId(result.newPolicyId());
+        ticket.setResolutionDeadline(result.newResolutionDeadline());
+        log.info("[AI 采纳] 已随优先级变更重算解决时限。ticketId={} policyId={}→{} resolutionDeadline={}",
+                ticket.getId(), oldPolicyId, result.newPolicyId(), result.newResolutionDeadline());
     }
 }

@@ -66,4 +66,45 @@ public interface TicketSlaCalculator {
      */
     record SlaSnapshot(Long policyId, LocalDateTime responseDeadline, LocalDateTime resolutionDeadline) {
     }
+
+    /**
+     * 优先级变更后的解决时限重算（§9.9，D10-05 补单）。
+     *
+     * <p>场景：AI 建议被采纳、或将来任何入口改了 {@code ticket.priority} ——
+     * §9 的 deadline 是「创建时按当时 priority 算并落库」的，不改就会出现
+     * 「优先级 P1、时限却是 P3 的」这种自相矛盾的组合。
+     *
+     * <h2>⚠️ 为什么是「差值平移」而不是按 created_at 绝对重算</h2>
+     * 绝对重算（{@code created_at + 新分钟数}）会抹掉两样已有的修正：
+     * <ul>
+     *   <li>§9.4 的<b>暂停顺延</b>（{@code sla_paused_minutes} 是累加到 deadline 上的）；</li>
+     *   <li>§9.6 <b>reopen 的新基准</b>（重开后 deadline = 「reopen 时间 + 分钟数」，不再是 created_at）。</li>
+     * </ul>
+     * 差值平移是在现有 deadline 上整体挪动，两样修正都完整保留：
+     * <pre>
+     * new_resolution_deadline = old_resolution_deadline
+     *                         + (新策略.resolution_minutes - 旧策略.resolution_minutes)
+     * </pre>
+     *
+     * <p><b>{@code response_deadline} 不参与</b>：§9.4 已确立「响应发生在早期」的先例（暂停顺延也不动它），
+     * 且工单若已响应，重算会改写「是否达标」这一历史事实。
+     *
+     * @param oldPolicyId                工单当前冻结的策略版本 id（{@code ticket.sla_policy_id}）
+     * @param newPriority                变更后的优先级
+     * @param currentResolutionDeadline  工单当前的解决截止
+     * @return 新的策略 id 与解决截止；<b>以下情况返回 {@code null}</b>（由调用方决定怎么办）：
+     *         当前 deadline 为空（创建时就没算出来，没有可平移的基准）、
+     *         旧策略查不到、新优先级没有 ACTIVE 策略、或新旧命中同一版策略（无需挪动）
+     */
+    RescheduleResult rescheduleForPriorityChange(Long oldPolicyId, TicketPriority newPriority,
+                                                 LocalDateTime currentResolutionDeadline);
+
+    /**
+     * 优先级变更重算的产物。
+     *
+     * @param newPolicyId           新的策略版本 id（应写回 {@code ticket.sla_policy_id}）
+     * @param newResolutionDeadline 平移后的解决截止
+     */
+    record RescheduleResult(Long newPolicyId, LocalDateTime newResolutionDeadline) {
+    }
 }
