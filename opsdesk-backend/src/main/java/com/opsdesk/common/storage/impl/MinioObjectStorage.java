@@ -8,6 +8,7 @@ import io.minio.GetObjectArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.errors.ErrorResponseException;
 import jakarta.annotation.PostConstruct;
@@ -116,6 +117,27 @@ public class MinioObjectStorage implements ObjectStorage {
         catch (Exception ex) {
             log.warn("[对象存储] 判断对象是否存在失败 objectName={} cause={}", objectName, ex.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * 删除对象（工单 D12-05）。
+     *
+     * <p>对象不存在时 MinIO 的 {@code removeObject} 本身就不报错（S3 的 DELETE 是幂等的），
+     * 所以这里天然满足「幂等」的契约；只有真正的故障（连不上、无权限）才会走到 catch。
+     */
+    @Override
+    public void delete(String objectName) {
+        try {
+            minioClient.removeObject(RemoveObjectArgs.builder()
+                    .bucket(properties.getBucketName())
+                    .object(objectName)
+                    .build());
+        }
+        catch (Exception ex) {
+            log.error("[对象存储] 删除对象失败 objectName={}", objectName, ex);
+            throw new BizException(com.opsdesk.common.ErrorCode.SERVICE_UNAVAILABLE,
+                    "附件存储服务不可用，请稍后重试");
         }
     }
 }

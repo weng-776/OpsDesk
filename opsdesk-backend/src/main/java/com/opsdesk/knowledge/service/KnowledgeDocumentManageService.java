@@ -35,6 +35,24 @@ public interface KnowledgeDocumentManageService {
     KnowledgeDocumentVO detail(Long id);
 
     /**
+     * 删除文档（工单 D12-05，API §10.4，权限 {@code knowledge:manage}）。
+     *
+     * <h2>🔴 三处一起清，顺序是「先向量、再 DB」</h2>
+     * <pre>
+     *   ① 删 Milvus 向量（按 metadata 里的 documentId 过滤）
+     *   ② 删 knowledge_chunk
+     *   ③ 删 knowledge_document（物理删除 —— DDL 没有 deleted 列）
+     *   ④ 删 MinIO 对象（失败只记 warn，不阻断）
+     * </pre>
+     * 规格 §12.3 的原话是「同步删除 {@code knowledge_chunk} 与对应向量，<b>避免孤儿向量</b>」。
+     * 之所以<b>先删向量</b>：万一删向量失败，此时 DB 还完整、用户重试即可；
+     * 反过来先删 DB 的话，{@code vector_id} 随行一起消失，Milvus 里那批向量就<b>再也找不回来了</b>。
+     *
+     * @throws com.opsdesk.common.BizException 40400 文档不存在；50300 向量库不可用（<b>此时 DB 一行都不动</b>）
+     */
+    void delete(Long id);
+
+    /**
      * 上传结果（API §10.2 的响应 {@code data}）。
      *
      * <p>就两个字段 —— 上传接口不返回文档内容、也不返回解析结果（都还没有）。

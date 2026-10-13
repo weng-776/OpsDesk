@@ -39,4 +39,15 @@ public interface ObjectStorage {
 
     /** 对象是否存在（下载前的兜底检查：DB 有记录但对象被误删时要给出明确错误而不是空流） */
     boolean exists(String objectName);
+
+    /**
+     * 删除对象（工单 D12-05 补 —— 删除知识文档时要连对象一起清掉，否则留下存储层孤儿）。
+     *
+     * <p><b>幂等</b>：对象本来就不存在时<b>不报错</b>。「删除」的语义是"让它不再存在"，
+     * 而它已经不存在了，目标已达成 —— 报错只会让调用方为了"删一个已经不存在的对象"去做无谓的重试。
+     * （S3 协议里 {@code DELETE} 本身就是幂等的，MinIO 亦如此。）
+     *
+     * @throws com.opsdesk.common.BizException {@code 50300} —— 存储服务不可用（这是故障，与"对象不存在"要分清）
+     */
+    void delete(String objectName);
 }
