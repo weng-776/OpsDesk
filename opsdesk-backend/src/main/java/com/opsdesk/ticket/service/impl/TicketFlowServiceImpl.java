@@ -398,7 +398,7 @@ public class TicketFlowServiceImpl implements TicketFlowService {
                     ticket.getId(), ticket.getStatus(), ticket.getVersion(), transition.action());
             throw BizException.conflict("工单状态已被其他操作变更，请刷新后重试");
         }
-
+//        记一次工单流转。
         historyRecorder.record(ticket.getId(), user.userId(), transition.action(),
                 transition.from(), transition.to(), remark);
 
