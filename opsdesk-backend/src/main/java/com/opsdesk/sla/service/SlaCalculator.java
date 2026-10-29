@@ -202,7 +202,7 @@ public class SlaCalculator {
                 .map(Ticket::getSlaPolicyId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
-        Map<Long, SlaPolicy> policies = loadPolicies(policyIds);
+            Map<Long, SlaPolicy> policies = loadPolicies(policyIds);
 
         for (Ticket ticket : tickets) {
             if (ticket == null || ticket.getId() == null) {
@@ -217,7 +217,7 @@ public class SlaCalculator {
     // ==================== 私有 ====================
 
     /** 套用两条线的纯函数（{@code policy} 可为 {@code null} → minutes 全缺，判定退化） */
-    private SlaOutcome compute(Ticket ticket, SlaPolicy policy, LocalDateTime now) {
+        private SlaOutcome compute(Ticket ticket, SlaPolicy policy, LocalDateTime now) {
         Integer responseMinutes = policy != null ? policy.getResponseMinutes() : null;
         Integer resolutionMinutes = policy != null ? policy.getResolutionMinutes() : null;
 

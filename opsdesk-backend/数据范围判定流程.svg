@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 740" width="900" height="740">
+  <title>数据范围判定流程</title>
+  <desc>按角色推导工单可见范围：管理员全部、服务人员三段并集、员工仅本人、无角色恒假条件；单条接口先判存在性再判可见性</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .sub { font-size: 14px; font-weight: 600; fill: #1F2937; }
+    .th { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .ts { font-size: 12px; fill: #6B7280; }
+    .lb { font-size: 11px; fill: #6B7280; }
+  </style>
+
+  <rect width="900" height="740" fill="#FFFFFF"/>
+  <text class="title" x="450" y="30" text-anchor="middle">数据范围判定流程</text>
+
+  <rect x="350" y="56" width="200" height="46" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="79" text-anchor="middle" dominant-baseline="central">当前用户（角色 + 部门）</text>
+
+  <path d="M450 102L450 132" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="350" y="136" width="200" height="46" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="159" text-anchor="middle" dominant-baseline="central">按角色取可见范围</text>
+
+  <path d="M450 182L450 205" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+  <path d="M132 205L757 205" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+  <path d="M132 205L132 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M342 205L342 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M552 205L552 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M757 205L757 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="35" y="220" width="195" height="70" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="th" x="132" y="246" text-anchor="middle">管理员</text>
+  <text class="ts" x="132" y="268" text-anchor="middle">不加任何条件</text>
+  <text class="lb" x="132" y="284" text-anchor="middle">看到全部数据</text>
+
+  <rect x="245" y="220" width="195" height="70" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="342" y="246" text-anchor="middle">服务人员</text>
+  <text class="ts" x="342" y="268" text-anchor="middle">三段并集</text>
+  <text class="lb" x="342" y="284" text-anchor="middle">见下方展开</text>
+
+  <rect x="455" y="220" width="195" height="70" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="552" y="246" text-anchor="middle">普通员工</text>
+  <text class="ts" x="552" y="268" text-anchor="middle">创建人 = 我</text>
+  <text class="lb" x="552" y="284" text-anchor="middle">只看得到自己提的单</text>
+
+  <rect x="665" y="220" width="195" height="70" rx="10" fill="#FCEBEB" stroke="#F09595" stroke-width="0.5"/>
+  <text class="th" x="757" y="246" text-anchor="middle">无角色</text>
+  <text class="ts" x="757" y="268" text-anchor="middle">恒假条件</text>
+  <text class="lb" x="757" y="284" text-anchor="middle">什么都看不到</text>
+
+  <path d="M342 290L342 305" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+  <path d="M167 305L717 305" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+  <path d="M167 305L167 316" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M442 305L442 316" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M717 305L717 316" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="820" y="310" text-anchor="middle">三段并集</text>
+
+  <rect x="40" y="320" width="255" height="64" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="ts" x="167" y="342" text-anchor="middle">① 分配给我的</text>
+  <text class="lb" x="167" y="364" text-anchor="middle">受理人 = 当前用户</text>
+
+  <rect x="315" y="320" width="255" height="64" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="ts" x="442" y="342" text-anchor="middle">② 公共待领取池</text>
+  <text class="lb" x="442" y="364" text-anchor="middle">待受理 且 尚无受理人</text>
+
+  <rect x="590" y="320" width="255" height="64" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="ts" x="717" y="342" text-anchor="middle">③ 创建人部门属于我的部门子树</text>
+  <text class="lb" x="717" y="364" text-anchor="middle">子树每次现算，不缓存</text>
+
+  <text class="ts" x="35" y="418">多角色取最宽（管理员 &gt; 服务人员 &gt; 普通员工）；「我的工单」走强制自查通道，不会因管理员身份而看到全部</text>
+  <text class="ts" x="35" y="442">列表接口只过滤不拒绝；无角色时用恒假条件而不是「不加条件」—— 后者会把全部数据放出去（fail-open）</text>
+
+  <text class="sub" x="35" y="484">单条接口的判定顺序</text>
+
+  <rect x="300" y="502" width="300" height="46" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="525" text-anchor="middle" dominant-baseline="central">① 先按 id 查工单</text>
+
+  <path d="M600 525L636 525" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="618" y="515" text-anchor="middle">查不到</text>
+  <rect x="640" y="502" width="230" height="46" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="755" y="525" text-anchor="middle" dominant-baseline="central">40400 · 工单不存在</text>
+
+  <path d="M450 548L450 574" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="578" width="300" height="46" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="601" text-anchor="middle" dominant-baseline="central">② 再判可见性</text>
+
+  <path d="M600 601L636 601" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="618" y="591" text-anchor="middle">不可见</text>
+  <rect x="640" y="578" width="230" height="46" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="755" y="601" text-anchor="middle" dominant-baseline="central">40301 · 无权查看</text>
+
+  <path d="M450 624L450 650" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="654" width="300" height="46" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="677" text-anchor="middle" dominant-baseline="central">③ 返回数据</text>
+
+  <text class="lb" x="35" y="724" text-anchor="start">顺序固定：反了会让「不存在的 id」也返回 40301，攻击者可据此推断资源是否存在</text>
+</svg>

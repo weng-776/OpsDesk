@@ -1,6 +1,8 @@
 package com.opsdesk.knowledge.service;
 
+import com.opsdesk.common.PageResult;
 import com.opsdesk.common.enums.KnowledgeDocStatus;
+import com.opsdesk.knowledge.dto.KnowledgeDocumentQuery;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
@@ -26,6 +28,20 @@ public interface KnowledgeDocumentManageService {
      * @throws com.opsdesk.common.BizException 40001 —— 空文件 / 超 20MB / 类型不在白名单
      */
     KnowledgeDocumentUploadResult upload(MultipartFile file, String title);
+
+    /**
+     * 文档分页列表（补单 · 知识库文档列表，API 文档 §10.1）。
+     *
+     * <p>只查 {@code knowledge_document} 一张表，返回 {@link KnowledgeDocumentVO} 的集合 ——
+     * 与 §10.3 详情<b>同一个 VO</b>，且同样<b>不含 {@code filePath}</b>。
+     *
+     * <p>知识库<b>没有数据范围</b>（§22：所有登录角色都能查看知识库），
+     * 所以这里不加任何可见性过滤 —— 全员看到的是同一份清单。
+     *
+     * @param query 分页 + {@code status} + {@code keyword}；{@code null} 视为「全部、第 1 页」
+     * @return 分页结果；无数据时是空列表而不是 {@code null}
+     */
+    PageResult<KnowledgeDocumentVO> page(KnowledgeDocumentQuery query);
 
     /**
      * 文档详情（§10.3，供前端轮询 {@code PROCESSING → READY / FAILED}）。

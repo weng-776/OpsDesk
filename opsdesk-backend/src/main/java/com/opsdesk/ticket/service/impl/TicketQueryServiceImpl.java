@@ -3,7 +3,6 @@ package com.opsdesk.ticket.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.opsdesk.common.BizException;
-import com.opsdesk.common.ErrorCode;
 import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.datascope.TicketDataScopeHelper;
@@ -15,6 +14,7 @@ import com.opsdesk.ticket.entity.Ticket;
 import com.opsdesk.ticket.service.TicketQueryService;
 import com.opsdesk.ticket.service.TicketService;
 import com.opsdesk.ticket.statemachine.TicketStateMachine;
+import com.opsdesk.ticket.support.TicketQueryConditions;
 import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketListVO;
 import com.opsdesk.user.entity.User;
@@ -25,7 +25,6 @@ import org.springframework.util.StringUtils;
 
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -199,72 +198,17 @@ public class TicketQueryServiceImpl implements TicketQueryService {
         }
 
         // ② 客户端筛选（只能在可见集合里再缩小）
-        applyFilters(wrapper, query);
+        //    ⚠️ 与工单导出（§8.6）共用同一份条件构造 —— 两边条件漂移会让"列表 8 条、导出 10 条"
+        TicketQueryConditions.applyFilters(wrapper, query);
 
         // ③ 排序（白名单 + tiebreaker）
-        applySort(wrapper, query.getSort());
+        TicketQueryConditions.applySort(wrapper, query.getSort());
 
         Page<Ticket> page = ticketService.page(new Page<>(pageNo, size), wrapper);
         log.debug("[工单列表] mode={} page={} size={} total={} 命中 {} 行",
                 scopeMode, pageNo, size, page.getTotal(), page.getRecords().size());
 
         return PageResult.of(toListVOList(page.getRecords()), page.getTotal(), pageNo, size);
-    }
-
-    private void applyFilters(LambdaQueryWrapper<Ticket> wrapper, TicketQuery query) {
-        if (query.getStatus() != null) {
-            wrapper.eq(Ticket::getStatus, query.getStatus());
-        }
-        if (query.getPriority() != null) {
-            wrapper.eq(Ticket::getPriority, query.getPriority());
-        }
-        if (query.getCategory() != null) {
-            wrapper.eq(Ticket::getCategory, query.getCategory());
-        }
-        if (query.getType() != null) {
-            wrapper.eq(Ticket::getType, query.getType());
-        }
-
-        String keyword = trimToNull(query.getKeyword());
-        if (keyword != null) {
-            String escaped = escapeLikeWildcards(keyword);
-            // 关键字匹配 ticket_no / title，用 AND (...) 分组，避免把 OR 泄漏到外层
-            wrapper.and(w -> w.like(Ticket::getTicketNo, escaped).or().like(Ticket::getTitle, escaped));
-        }
-
-        if (query.getAssigneeId() != null) {
-            wrapper.eq(Ticket::getAssigneeId, query.getAssigneeId());
-        }
-        if (query.getStartTime() != null) {
-            wrapper.ge(Ticket::getCreatedAt, query.getStartTime());
-        }
-        if (query.getEndTime() != null) {
-            wrapper.le(Ticket::getCreatedAt, query.getEndTime());
-        }
-    }
-
-    /**
-     * 排序白名单（SOP §5 红区）。
-     *
-     * <p>只认 {@code createdAt} / {@code priority} × {@code asc} / {@code desc} 四种组合
-     * （§8.3 文档列了 {@code createdAt,desc} 与 {@code priority,asc}，这里把另外两个方向也放进来 ——
-     * 都是固定列名，不存在拼接）。其余值一律 40001，<b>绝不</b>把客户端字符串拼进 ORDER BY。
-     */
-    private void applySort(LambdaQueryWrapper<Ticket> wrapper, String sort) {
-        String normalized = sort == null
-                ? "" : sort.trim().toLowerCase(Locale.ROOT).replace(" ", "");
-        switch (normalized) {
-            case "", "createdat,desc" -> wrapper.orderByDesc(Ticket::getCreatedAt);
-            case "createdat,asc" -> wrapper.orderByAsc(Ticket::getCreatedAt);
-            // priority 存的是 'P1'/'P2'/'P3' 字符串，字典序恰好等于紧急度顺序（P1 最紧急）
-            case "priority,asc" -> wrapper.orderByAsc(Ticket::getPriority);
-            case "priority,desc" -> wrapper.orderByDesc(Ticket::getPriority);
-            default -> throw new BizException(ErrorCode.PARAM_INVALID,
-                    "sort 只支持 createdAt,desc / createdAt,asc / priority,asc / priority,desc");
-        }
-        // ⚠️ tiebreaker：created_at 精度到秒，同秒的多张工单若只按它排序，
-        //    MySQL 不保证稳定顺序 → 翻页会跳行/重复。加唯一列兜住
-        wrapper.orderByDesc(Ticket::getId);
     }
 
     // ==================== VO 装配（批量，无 N+1） ====================
@@ -338,26 +282,5 @@ public class TicketQueryServiceImpl implements TicketQueryService {
     /** 姓名优先用 nickname，缺失时退回 username（两者都不该为 null，但别让 toMap 抛 NPE） */
     private String displayNameOf(User user) {
         return user.getNickname() == null ? user.getUsername() : user.getNickname();
-    }
-
-    // ==================== 小工具 ====================
-
-    private static String trimToNull(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        String trimmed = raw.trim();
-        return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    /**
-     * 转义 LIKE 通配符。
-     *
-     * <p>参数本身是预编译的（没有 SQL 注入），但用户输入的 {@code %} / {@code _}
-     * 会被 MySQL 当成通配符，让 {@code ?keyword=%} 变成「匹配所有工单」。
-     * MySQL 默认转义符是 {@code \}，所以先补一层转义。
-     */
-    private static String escapeLikeWildcards(String raw) {
-        return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 }

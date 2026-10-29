@@ -1,8 +1,10 @@
 package com.opsdesk.knowledge.controller;
 
 import com.opsdesk.auth.annotation.RequirePermission;
+import com.opsdesk.common.PageResult;
 import com.opsdesk.common.Result;
 import com.opsdesk.common.constant.PermissionCodes;
+import com.opsdesk.knowledge.dto.KnowledgeDocumentQuery;
 import com.opsdesk.knowledge.service.KnowledgeDocumentManageService;
 import com.opsdesk.knowledge.service.KnowledgeDocumentManageService.KnowledgeDocumentUploadResult;
 import com.opsdesk.knowledge.service.KnowledgeDocumentManageService.KnowledgeDocumentVO;
@@ -18,6 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
  * 知识文档接口（工单 D12-01，API 文档 §10.2 上传 / §10.3 详情 / §10.4 删除）
  *
  * <pre>
+ * GET    /api/knowledge/documents          文档分页列表（补单补齐）              权限 knowledge:view
  * POST   /api/knowledge/documents          multipart：file（≤20MB）+ title（可空）  权限 knowledge:manage
  * GET    /api/knowledge/documents/{id}     详情（供前端轮询状态）                    权限 knowledge:view
  * DELETE /api/knowledge/documents/{id}     删除（同步清 chunk 与向量）              权限 knowledge:manage
@@ -37,6 +40,25 @@ public class KnowledgeDocumentController {
 
     public KnowledgeDocumentController(KnowledgeDocumentManageService knowledgeDocumentManageService) {
         this.knowledgeDocumentManageService = knowledgeDocumentManageService;
+    }
+
+    /**
+     * 文档分页列表（§10.1，补单补齐）。
+     *
+     * <pre>
+     * GET /api/knowledge/documents?page=1&amp;size=10&amp;status=READY&amp;keyword=VPN
+     * </pre>
+     *
+     * <p>权限用 {@code knowledge:view} —— §22 里「知识库查看」<b>所有登录角色都有</b>，
+     * 只有「知识库管理」才是 ADMIN。所以 EMPLOYEE 调本接口是 200，别把它收紧成 {@code manage}。
+     *
+     * <p>⚠️ {@code status} 传给 Spring 绑定成枚举：传 {@code ?status=abc} 会由
+     * {@code GlobalExceptionHandler} 转成 {@code 40001}，不是 500、更不是静默忽略。
+     */
+    @RequirePermission(PermissionCodes.KNOWLEDGE_VIEW)
+    @GetMapping("/api/knowledge/documents")
+    public Result<PageResult<KnowledgeDocumentVO>> page(KnowledgeDocumentQuery query) {
+        return Result.ok(knowledgeDocumentManageService.page(query));
     }
 
     /**

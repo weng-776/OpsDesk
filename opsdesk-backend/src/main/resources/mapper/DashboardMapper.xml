@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  Dashboard 聚合查询 Mapper XML（补单 · Dashboard 聚合接口）
+
+  规格依据：
+    · API 文档 §14.1（管理端总览，6 个字段 + 口径表）、§14.2（AGENT 工作台，4 个字段）
+    · 规格基线 §15.1（指标与口径）、§21.11（接口清单）
+    · 补单文档 OpsDesk_补单_Dashboard接口_V1.md 要点 2 / 3 / 4 / 5
+
+  ⚠️ 三条最容易写错的地方（补单文档逐条点名）：
+    1. resolved_today 用 resolved_at；avg_resolve_minutes 用 closed_at。**两个不同的时间列。**
+       把 avg 写成 resolved_at 会算成「解决耗时」而不是「端到端关闭耗时」，
+       数字看着也像对的，但口径错了 —— 而且没人会去查。
+    2. sla_breached 必须叠加「未关闭」条件。否则历史超时的单会一直算进去，数字只增不减。
+    3. SUM(...) 在空表时返回 NULL（不带 GROUP BY 的聚合恒返回一行，但值全是 NULL）。
+       Java 侧用 Integer 接收并 null → 0 兜底，**不要在 SQL 里写 COALESCE 抹平** ——
+       那样就分不清「真的是 0」和「查询炸了返回空」了。
+
+  ⚠️ 时间边界一律 #{dayStart} / #{dayEnd}，**绝不出现 CURDATE() / NOW()**：
+     数据库时区与应用时区一旦不一致（部署环境常见），"今日"就会错位，
+     且这种错误只在跨零点时暴露，极难排查。区间是前闭后开 [dayStart, dayEnd)。
+
+  ⚠️ 参数一律 #{}，绝不用 ${}（${} 是字符串拼接 = SQL 注入入口）。
+
+  ⚠️ WHERE 里必须自己带 deleted = 0：手写 SQL 绕过了 MP 的 @TableLogic 逻辑删除。
+-->
+
+<mapper namespace="com.opsdesk.dashboard.mapper.DashboardMapper">
+
+    <!--
+      管理端总览的 6 个指标（API §14.1）—— 一条聚合 SQL 出全部。
+
+      ⚠️ 为什么是一条而不是 6 次 count(*)：
+         Dashboard 会被频繁刷新，6 次往返 × 每次全表条件扫描，成本是 6 倍；
+         而且 6 次查询各自在不同的事务快照下执行，页面上会出现「6 个数字不属于同一时刻」的
+         轻微不一致（比如 pending 和 processing 加起来对不上总数）。一条 SQL 天然是同一快照。
+
+      ⚠️ WHERE 只有 deleted = 0 —— overview 是**全企业**统计，不加任何数据范围条件。
+         不要在这里复用 TicketDataScopeHelper：它的三段式是「工单列表」的口径，
+         Dashboard 的指标口径是特意定义的，套用会让数字对不上（补单禁止项第 3 条）。
+
+      ⚠️ pending / processing 的枚举值照 §3.5 抄死：
+         pending    = OPEN, ASSIGNED                        （还没人开工）
+         processing = IN_PROGRESS, WAITING_USER, REOPENED    （处理中，含挂起与重开）
+         WAITING_CONFIRM 不在两者之内 —— 它等待员工确认，既不是「待处理」也不是「处理中」。
+         若产品口径要把它算进 processing，只改这里，Java 层不用动。
+    -->
+    <select id="selectOverview" resultType="com.opsdesk.dashboard.vo.DashboardOverviewVO">
+        SELECT
+            SUM(CASE WHEN created_at &gt;= #{dayStart} AND created_at &lt; #{dayEnd}
+                     THEN 1 ELSE 0 END)                                              AS today_created,
+            SUM(CASE WHEN status IN ('OPEN','ASSIGNED')
+                     THEN 1 ELSE 0 END)                                              AS pending,
+            SUM(CASE WHEN status IN ('IN_PROGRESS','WAITING_USER','REOPENED')
+                     THEN 1 ELSE 0 END)                                              AS processing,
+            SUM(CASE WHEN resolved_at &gt;= #{dayStart} AND resolved_at &lt; #{dayEnd}
+                     THEN 1 ELSE 0 END)                                              AS resolved_today,
+            SUM(CASE WHEN sla_resolution_state = 'BREACHED'
+                          AND status NOT IN ('CLOSED','CANCELLED')
+                     THEN 1 ELSE 0 END)                                              AS sla_breached,
+            ROUND(AVG(CASE WHEN closed_at &gt;= #{dayStart} AND closed_at &lt; #{dayEnd}
+                           THEN TIMESTAMPDIFF(MINUTE, created_at, closed_at) END))   AS avg_resolve_minutes
+        FROM ticket
+        WHERE deleted = 0
+    </select>
+
+    <!--
+      AGENT 工作台的 4 个指标（API §14.2）。
+
+      口径（补单文档 §3 定死；规格原文只列了名称）：
+        pool_count     status='OPEN' AND assignee_id IS NULL
+                       —— 公共待领取池，与当前用户无关，所有 AGENT 看到的数字相同
+        my_count       assignee_id = 我 AND status NOT IN ('CLOSED','CANCELLED')
+                       —— 我手上还没结束的单；已完成的不算「我的活儿」
+        warning_count  assignee_id = 我 AND sla_resolution_state='WARNING' AND 未结束
+                       —— 我名下临近超时，这是最该被看到的数字
+        resolved_today assignee_id = 我 AND resolved_at ∈ 今日
+
+      ⚠️ pool_count 是标量子查询，不是 LEFT JOIN：
+         用 JOIN 就得 GROUP BY，一旦主查询没有匹配行，整个结果集会变成 0 行
+         （池子里有单、但我名下没单的时候，页面会连总数都显示不出来）。
+         标量子查询恒返回一行一个值，与主查询是否命中无关。
+
+      ⚠️ 两个「未结束」都用 status NOT IN ('CLOSED','CANCELLED') 的**枚举取反**，
+         而不是 status IN (未结束的 6 个状态) ——
+         将来 §3.5 若新增状态，取反写法自动把它算成「未结束」（安全侧），
+         正向枚举则会漏掉新状态（危险侧），而且不会有人发现。
+
+      ⚠️ 这里的口径**不能**复用 TicketDataScopeHelper 的三段式（补单禁止项第 3 条）：
+         三段式里含「本部门创建的工单」，而工作台的 my_count 必须是「我名下的」，
+         混进来会让数字和前端的「待受理池 / 我的工单」页签对不上。
+    -->
+    <select id="selectAgent" resultType="com.opsdesk.dashboard.vo.DashboardAgentVO">
+        SELECT
+            (SELECT COUNT(*)
+               FROM ticket
+              WHERE deleted = 0
+                AND status = 'OPEN'
+                AND assignee_id IS NULL)                                            AS pool_count,
+            SUM(CASE WHEN assignee_id = #{userId}
+                          AND status NOT IN ('CLOSED','CANCELLED')
+                     THEN 1 ELSE 0 END)                                             AS my_count,
+            SUM(CASE WHEN assignee_id = #{userId}
+                          AND sla_resolution_state = 'WARNING'
+                          AND status NOT IN ('CLOSED','CANCELLED')
+                     THEN 1 ELSE 0 END)                                             AS warning_count,
+            SUM(CASE WHEN assignee_id = #{userId}
+                          AND resolved_at &gt;= #{dayStart} AND resolved_at &lt; #{dayEnd}
+                     THEN 1 ELSE 0 END)                                             AS resolved_today
+        FROM ticket
+        WHERE deleted = 0
+    </select>
+
+</mapper>

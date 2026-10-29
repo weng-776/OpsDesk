@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 566" width="900" height="566">
+  <title>OpsDesk 后端整体架构</title>
+  <desc>客户端、接入层、业务域、异步链路、基础设施五层结构</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .layer { font-size: 14px; font-weight: 600; fill: #2C2C2A; }
+    .layer-teal { font-size: 14px; font-weight: 600; fill: #0F6E56; }
+    .main { font-size: 12px; fill: #4B5563; }
+    .sub { font-size: 11px; fill: #9CA3AF; }
+  </style>
+
+  <rect width="900" height="566" fill="#FFFFFF"/>
+
+  <text class="title" x="450" y="34" text-anchor="middle">OpsDesk 后端整体架构</text>
+
+  <rect x="30" y="60" width="840" height="76" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="layer" x="54" y="90">客户端</text>
+  <text class="main" x="54" y="114">Web 前端 · AI 助手对话</text>
+  <text class="sub" x="54" y="130">统一前缀 /api，登录后携带 JWT</text>
+
+  <path d="M450 136L450 156" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="160" width="840" height="76" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="layer" x="54" y="190">接入层</text>
+  <text class="main" x="54" y="214">TraceId 过滤器 · 鉴权拦截器 · 15 个 Controller（58 个端点）· 统一响应与全局异常</text>
+  <text class="sub" x="54" y="230">JWT 校验 → 权限加载 → 数据范围，全部在进入业务之前完成</text>
+
+  <path d="M450 236L450 256" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="260" width="840" height="76" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="layer" x="54" y="290">业务域</text>
+  <text class="main" x="54" y="314">工单 · SLA · 通知 · 审计 · 用户 / 部门 / 权限 · AI（分析 / 助手 / 工具集）· 知识库</text>
+  <text class="sub" x="54" y="330">工单状态机 · SLA 版本化 · 审计快照 · Outbox 事件 · RAG 检索</text>
+
+  <path d="M450 336L450 356" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="360" width="840" height="76" rx="12" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="layer-teal" x="54" y="390">异步链路</text>
+  <text class="main" x="54" y="414">Outbox 投递器 → RabbitMQ（4 个业务队列 + 4 个死信队列）→ 消费者（通知 / 知识索引）</text>
+  <text class="sub" x="54" y="430">业务数据与事件同事务落库；投递等待 broker confirm 后才标记已发送</text>
+
+  <path d="M450 436L450 456" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="460" width="840" height="76" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="layer" x="54" y="490">基础设施</text>
+  <text class="main" x="54" y="514">MySQL · Redis · MinIO · Milvus · DeepSeek / 通义 Embedding</text>
+  <text class="sub" x="54" y="530">17 张业务表 / 权限缓存、幂等、限流、分布式锁 / 附件与知识文档 / 向量库 / 对话与向量模型</text>
+</svg>

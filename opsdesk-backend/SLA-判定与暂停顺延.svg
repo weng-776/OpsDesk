@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 526" width="900" height="526">
+  <title>SLA 判定与暂停顺延</title>
+  <desc>按剩余时间占总时长的比例判定正常、临近超时、已超时三态；暂停期间不计入超时并顺延解决时限</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .sub { font-size: 14px; font-weight: 600; fill: #1F2937; }
+    .st { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .ts { font-size: 12px; fill: #6B7280; }
+    .lb { font-size: 11px; fill: #6B7280; }
+  </style>
+
+  <rect width="900" height="526" fill="#FFFFFF"/>
+  <text class="title" x="450" y="30" text-anchor="middle">SLA 判定与暂停顺延</text>
+
+  <rect x="45" y="58" width="250" height="88" rx="10" fill="#FCEBEB" stroke="#F09595" stroke-width="0.5"/>
+  <text class="st" x="170" y="88" text-anchor="middle">已超时 BREACHED</text>
+  <text class="ts" x="170" y="114" text-anchor="middle">剩余时间 ≤ 0</text>
+  <text class="lb" x="170" y="134" text-anchor="middle">恰好到期也算超时</text>
+
+  <rect x="320" y="58" width="250" height="88" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="st" x="445" y="88" text-anchor="middle">临近超时 WARNING</text>
+  <text class="ts" x="445" y="114" text-anchor="middle">0 &lt; 剩余时间 ≤ 总时长的 20%</text>
+  <text class="lb" x="445" y="134" text-anchor="middle">恰好 20% 也算预警</text>
+
+  <rect x="595" y="58" width="250" height="88" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="st" x="720" y="88" text-anchor="middle">正常 NORMAL</text>
+  <text class="ts" x="720" y="114" text-anchor="middle">剩余时间 &gt; 总时长的 20%</text>
+  <text class="lb" x="720" y="134" text-anchor="middle">同一条工单的响应线与解决线独立判定</text>
+
+  <text class="ts" x="45" y="176">剩余时间 = 截止时间 − 当前时间（按自然时间计，不排除节假日）；总时长取自 SLA 策略的响应 / 解决分钟数</text>
+  <text class="ts" x="45" y="200">响应线特例：已写入首次响应时间后，判定冻结为「达标 / 未达标」，不再倒计时（迟到的响应要留痕）</text>
+
+  <text class="sub" x="45" y="252">暂停与顺延</text>
+
+  <text class="lb" x="110" y="300" text-anchor="middle">创建</text>
+  <text class="lb" x="300" y="300" text-anchor="middle">暂停开始</text>
+  <text class="lb" x="470" y="300" text-anchor="middle">恢复</text>
+  <text class="lb" x="640" y="300" text-anchor="middle">原解决截止</text>
+  <text class="lb" x="790" y="300" text-anchor="middle">顺延后截止</text>
+
+  <path d="M80 330L830 330" fill="none" stroke="#D3D1C7" stroke-width="1"/>
+  <path d="M300 330L470 330" fill="none" stroke="#EF9F27" stroke-width="4" stroke-linecap="round"/>
+
+  <path d="M110 318L110 342" fill="none" stroke="#9CA3AF" stroke-width="1"/>
+  <path d="M300 318L300 342" fill="none" stroke="#9CA3AF" stroke-width="1"/>
+  <path d="M470 318L470 342" fill="none" stroke="#9CA3AF" stroke-width="1"/>
+  <path d="M640 318L640 342" fill="none" stroke="#9CA3AF" stroke-width="1"/>
+  <path d="M790 318L790 342" fill="none" stroke="#9CA3AF" stroke-width="1"/>
+
+  <circle cx="110" cy="330" r="4" fill="#FFFFFF" stroke="#9CA3AF" stroke-width="1.5"/>
+  <circle cx="300" cy="330" r="4" fill="#EF9F27" stroke="#EF9F27" stroke-width="1.5"/>
+  <circle cx="470" cy="330" r="4" fill="#EF9F27" stroke="#EF9F27" stroke-width="1.5"/>
+  <circle cx="640" cy="330" r="4" fill="#FFFFFF" stroke="#9CA3AF" stroke-width="1.5"/>
+  <circle cx="790" cy="330" r="4" fill="#5DCAA5" stroke="#5DCAA5" stroke-width="1.5"/>
+
+  <text class="lb" x="385" y="352" text-anchor="middle">暂停期间不计入超时</text>
+
+  <path d="M640 382L786 382" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="713" y="374" text-anchor="middle">解决截止时间平移暂停时长</text>
+
+  <text class="ts" x="45" y="428">· 顺延公式：解决截止时间 +=（恢复时刻 − 暂停时刻）；累计暂停分钟数同时累加，便于事后追溯</text>
+  <text class="ts" x="45" y="452">· 响应截止时间不参与顺延 —— 响应发生在流程早期，暂停不影响它</text>
+  <text class="ts" x="45" y="476">· 重新打开：以重开时间为基准重算解决时限；采纳 AI 建议改优先级：按新旧策略分钟数的差值平移</text>
+  <text class="ts" x="45" y="500">· 判定时机：定时任务每 5 分钟扫描一次；Redis 分布式锁保证多实例只有一个在扫，标志位保证同一工单只通知一次</text>
+</svg>

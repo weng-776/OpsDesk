@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 838" width="900" height="838">
+  <title>RAG 写入链路</title>
+  <desc>上传文档同步落库并写 Outbox 后立即返回，解析切分向量化在 MQ 消费者中异步完成，最终置为就绪或失败</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .th { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .ts { font-size: 12px; fill: #6B7280; }
+    .note { font-size: 12px; fill: #9CA3AF; }
+  </style>
+
+  <rect width="900" height="838" fill="#FFFFFF"/>
+  <text class="title" x="450" y="28" text-anchor="middle">RAG 写入链路</text>
+
+  <rect x="260" y="50" width="380" height="60" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="74" text-anchor="middle">上传文档</text>
+  <text class="ts" x="450" y="94" text-anchor="middle">POST /api/knowledge/documents</text>
+
+  <path d="M450 110L450 146" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="150" width="380" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="174" text-anchor="middle">校验：非空 → 大小 → 类型</text>
+
+  <path d="M640 174L676 174" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="note" x="658" y="164" text-anchor="middle">失败</text>
+  <rect x="680" y="150" width="180" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="ts" x="770" y="174" text-anchor="middle">40001</text>
+
+  <path d="M450 198L450 234" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="238" width="380" height="60" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="262" text-anchor="middle">落库 PROCESSING + 写 outbox</text>
+  <text class="ts" x="450" y="282" text-anchor="middle">立即返回 documentId</text>
+
+  <text class="note" x="450" y="326" text-anchor="middle">异步执行 · 不阻塞上传请求</text>
+  <path d="M30 340L870 340" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="5 5"/>
+
+  <path d="M450 298L450 356" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="360" width="380" height="60" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="384" text-anchor="middle">消费者取到事件</text>
+  <text class="ts" x="450" y="404" text-anchor="middle">Outbox 每 10 秒投递 · 等 confirm</text>
+
+  <path d="M450 420L450 456" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="460" width="380" height="60" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="484" text-anchor="middle">解析文档</text>
+  <text class="ts" x="450" y="504" text-anchor="middle">UTF-8 严格校验 · 非法字节直接判失败</text>
+
+  <path d="M450 520L450 556" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="560" width="380" height="60" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="584" text-anchor="middle">切分 → 向量化</text>
+  <text class="ts" x="450" y="604" text-anchor="middle">标题层级优先 · 500 字 / 重叠 50</text>
+
+  <path d="M450 620L450 656" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="660" width="380" height="60" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="450" y="684" text-anchor="middle">写 knowledge_chunk + Milvus</text>
+  <text class="ts" x="450" y="704" text-anchor="middle">含预分配 vector_id · 向量失败则清理切片</text>
+
+  <path d="M450 720L450 756" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="260" y="760" width="380" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="450" y="784" text-anchor="middle">READY / FAILED</text>
+</svg>

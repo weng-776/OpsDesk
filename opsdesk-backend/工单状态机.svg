@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 448" width="900" height="448">
+  <title>工单状态机</title>
+  <desc>8 个状态与主要流转路径，含 SLA 暂停与顺延、重新打开重算解决时限</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .st { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .st-end { font-size: 14px; font-weight: 500; fill: #444441; }
+    .lb { font-size: 11px; fill: #6B7280; }
+    .note { font-size: 12px; fill: #6B7280; }
+  </style>
+
+  <rect width="900" height="448" fill="#FFFFFF"/>
+  <text class="title" x="450" y="28" text-anchor="middle">工单状态机 · 8 个状态</text>
+
+  <rect x="30" y="100" width="135" height="52" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="st" x="97" y="126" text-anchor="middle" dominant-baseline="central">待受理</text>
+  <rect x="265" y="100" width="135" height="52" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="st" x="332" y="126" text-anchor="middle" dominant-baseline="central">已分派</text>
+  <rect x="500" y="100" width="135" height="52" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="st" x="567" y="126" text-anchor="middle" dominant-baseline="central">处理中</text>
+  <rect x="735" y="100" width="135" height="52" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="st" x="802" y="126" text-anchor="middle" dominant-baseline="central">待确认</text>
+
+  <rect x="30" y="220" width="135" height="52" rx="10" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+  <text class="st-end" x="97" y="246" text-anchor="middle" dominant-baseline="central">已撤销</text>
+  <rect x="265" y="220" width="135" height="52" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="st" x="332" y="246" text-anchor="middle" dominant-baseline="central">已重新打开</text>
+  <rect x="500" y="220" width="135" height="52" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="st" x="567" y="246" text-anchor="middle" dominant-baseline="central">待用户补充</text>
+  <rect x="735" y="220" width="135" height="52" rx="10" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+  <text class="st-end" x="802" y="246" text-anchor="middle" dominant-baseline="central">已关闭</text>
+
+  <path d="M165 126L261 126" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="215" y="118" text-anchor="middle">assign / accept</text>
+
+  <path d="M400 126L496 126" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="450" y="118" text-anchor="middle">start</text>
+
+  <path d="M635 126L731 126" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="685" y="118" text-anchor="middle">resolve</text>
+
+  <path d="M802 152L802 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="812" y="188" text-anchor="start">close</text>
+
+  <path d="M97 152L97 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="107" y="188" text-anchor="start">cancel</text>
+
+  <path d="M580 152L580 216" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="648" y="188" text-anchor="start">hold · SLA 暂停</text>
+
+  <path d="M554 216L554 156" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="lb" x="544" y="194" text-anchor="end">resume · SLA 顺延</text>
+
+  <path d="M735 126L700 126L700 290L332 290L332 276" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="510" y="284" text-anchor="middle">reject · 重算解决时限</text>
+
+  <path d="M400 226L480 226L480 156" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="lb" x="440" y="232" text-anchor="middle">start</text>
+
+  <path d="M307 100C307 68 357 68 357 100" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="lb" x="332" y="58" text-anchor="middle">transfer</text>
+
+  <text class="note" x="30" y="316">· 状态流转不使用 updateById，而是「前置状态 + 版本号」的条件更新；影响行数为 0 即判定冲突（并发接单只会有一个成功）</text>
+  <text class="note" x="30" y="340">· start 会写入首次响应时间（SLA 响应线从此冻结为达标 / 未达标）</text>
+  <text class="note" x="30" y="364">· 待受理与已分派均可 cancel（需填写撤销原因）；待用户补充与待确认在暂停期内不计入超时</text>
+  <text class="note" x="30" y="388">· force-close：任意非终态 → 已关闭（仅 ADMIN）；已关闭 / 已撤销为终态，拒绝任何流转</text>
+  <text class="note" x="30" y="412">· transfer 为自环（仅更换受理人，状态不变）</text>
+</svg>

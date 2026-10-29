@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 710" width="900" height="710">
+  <title>知识库查询链路（RAG 问答）</title>
+  <desc>问题向量化后在 Milvus 检索 Top-K 片段，拼装上下文交给模型总结并返回引用；向量库或向量化不可用时降级为关键词检索</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .th { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .ts { font-size: 12px; fill: #6B7280; }
+    .note { font-size: 12px; fill: #9CA3AF; }
+  </style>
+
+  <rect width="900" height="710" fill="#FFFFFF"/>
+  <text class="title" x="450" y="28" text-anchor="middle">知识库查询链路（RAG 问答）</text>
+
+  <rect x="300" y="50" width="320" height="60" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="74" text-anchor="middle">提问</text>
+  <text class="ts" x="460" y="94" text-anchor="middle">POST /api/knowledge/rag-query</text>
+
+  <path d="M460 110L460 146" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="150" width="320" height="48" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="460" y="174" text-anchor="middle">问题向量化 · 通义 Embedding</text>
+
+  <path d="M460 198L460 234" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="238" width="320" height="48" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="460" y="262" text-anchor="middle">Milvus 相似度检索 · Top-K</text>
+
+  <path d="M460 286L460 322" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="326" width="320" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="350" text-anchor="middle">召回非空？</text>
+  <text class="note" x="476" y="390" text-anchor="middle">是</text>
+
+  <path d="M620 350L656 350" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="note" x="638" y="340" text-anchor="middle">否</text>
+  <rect x="660" y="326" width="200" height="48" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="760" y="344" text-anchor="middle">未找到相关资料</text>
+  <text class="ts" x="760" y="362" text-anchor="middle">不调用模型</text>
+
+  <path d="M460 374L460 410" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="414" width="320" height="60" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="438" text-anchor="middle">拼装上下文</text>
+  <text class="ts" x="460" y="458" text-anchor="middle">片段正文 + 所属文档标题</text>
+
+  <path d="M460 474L460 510" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="514" width="320" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="538" text-anchor="middle">对话模型总结</text>
+
+  <path d="M460 562L460 598" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="602" width="320" height="60" rx="10" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="th" x="460" y="626" text-anchor="middle">返回 answer + references</text>
+  <text class="ts" x="460" y="646" text-anchor="middle">文档标题 / 片段号 / 相似度 / 片段</text>
+
+  <rect x="60" y="255" width="200" height="90" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="160" y="285" text-anchor="middle">降级：MySQL 关键词检索</text>
+  <text class="ts" x="160" y="305" text-anchor="middle">接口与响应结构不变</text>
+  <text class="ts" x="160" y="325" text-anchor="middle">相似度置空</text>
+
+  <path d="M300 174L180 174L180 251" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="note" x="238" y="166" text-anchor="middle">模型不可用</text>
+
+  <path d="M300 262L264 262" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="note" x="282" y="240" text-anchor="middle">库不可用</text>
+
+  <path d="M160 345L160 444L296 444" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+
+  <text class="note" x="450" y="696" text-anchor="middle">只检索 READY 状态的文档；Top-K 默认 5、上限 10；关键词检索的 LIKE 通配符做转义</text>
+</svg>

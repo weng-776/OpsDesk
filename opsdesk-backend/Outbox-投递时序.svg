@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 792" width="900" height="792">
+  <title>Outbox 投递时序</title>
+  <desc>业务数据与事件同一事务落库，定时任务认领后投递并等待 broker confirm，消费者幂等处理后 ack</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .p { font-size: 13px; font-weight: 500; fill: #1F2937; }
+    .m { font-size: 12px; fill: #4B5563; }
+    .loop { font-size: 11px; fill: #0F6E56; }
+    .note { font-size: 12px; fill: #6B7280; }
+  </style>
+
+  <rect width="900" height="792" fill="#FFFFFF"/>
+  <text class="title" x="450" y="30" text-anchor="middle">Outbox 投递时序（事务消息）</text>
+
+  <rect x="35" y="58" width="150" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="p" x="110" y="78" text-anchor="middle" dominant-baseline="central">业务服务</text>
+  <rect x="215" y="58" width="150" height="40" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="p" x="290" y="78" text-anchor="middle" dominant-baseline="central">event_outbox</text>
+  <rect x="395" y="58" width="150" height="40" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="p" x="470" y="78" text-anchor="middle" dominant-baseline="central">投递任务</text>
+  <rect x="575" y="58" width="150" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="p" x="650" y="78" text-anchor="middle" dominant-baseline="central">RabbitMQ</text>
+  <rect x="755" y="58" width="150" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="p" x="830" y="78" text-anchor="middle" dominant-baseline="central">消费者</text>
+
+  <path d="M110 98L110 700" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 3"/>
+  <path d="M290 98L290 700" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 3"/>
+  <path d="M470 98L470 700" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 3"/>
+  <path d="M650 98L650 700" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 3"/>
+  <path d="M830 98L830 700" fill="none" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="3 3"/>
+
+  <path d="M110 160L286 160" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="198" y="152" text-anchor="middle">业务数据 + 事件（同一事务）</text>
+
+  <path d="M290 204L114 204" fill="none" stroke="#185FA5" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="m" x="198" y="196" text-anchor="middle">提交成功</text>
+
+  <path d="M110 240L175 240L175 258L114 258" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="190" y="249" text-anchor="start">立即返回（不等待消息投递）</text>
+
+  <rect x="40" y="294" width="820" height="196" rx="10" fill="none" stroke="#5DCAA5" stroke-width="0.5" stroke-dasharray="5 5"/>
+  <text class="loop" x="56" y="314">每 10 秒一轮（上一轮结束后计时）</text>
+
+  <path d="M470 340L294 340" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="382" y="332" text-anchor="middle">认领待投记录（SKIP LOCKED · 每批 100）</text>
+
+  <path d="M470 386L646 386" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="558" y="378" text-anchor="middle">投递事件</text>
+
+  <path d="M650 430L474 430" fill="none" stroke="#185FA5" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <text class="m" x="562" y="422" text-anchor="middle">broker confirm</text>
+
+  <path d="M470 468L294 468" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="382" y="460" text-anchor="middle">标记已发送</text>
+
+  <path d="M650 540L826 540" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="738" y="532" text-anchor="middle">投递消息</text>
+
+  <path d="M830 576L865 576L865 592L834 592" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="m" x="790" y="585" text-anchor="end">幂等校验（messageId）→ 执行业务 → ack</text>
+
+  <text class="note" x="30" y="734">· 投递失败：重试次数 +1 并保持待投，下一轮再试；累计 5 次仍失败置为 FAILED，需人工介入</text>
+  <text class="note" x="30" y="758">· broker 不可达：本轮立即中止（否则每条消息都要等一次连接超时，事务与行锁会被长时间占用）</text>
+  <text class="note" x="30" y="782">· 消费失败：退避重试 3 次后进入死信队列，可在管理端预览与重投</text>
+</svg>

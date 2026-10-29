@@ -188,6 +188,16 @@
             <artifactId>hutool-all</artifactId>
             <version>5.7.17</version>
         </dependency>
+
+        <!--
+            POI：工单导出 xlsx（补单 · 工单导出，API §8.6）
+            ⚠️ 只引 poi-ooxml —— 它自带 poi 核心包；单独再引 poi 容易出现两处版本不一致
+        -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.4</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 830" width="900" height="830">
+  <title>鉴权链路</title>
+  <desc>请求经过 TraceId 过滤器、认证拦截器五步、授权拦截器，权限从 Redis 读取而不写在 token 里</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; }
+    .title { font-size: 17px; font-weight: 600; fill: #1F2937; }
+    .th { font-size: 14px; font-weight: 500; fill: #1F2937; }
+    .ts { font-size: 12px; fill: #6B7280; }
+    .lb { font-size: 11px; fill: #6B7280; }
+    .note { font-size: 12px; fill: #6B7280; }
+  </style>
+
+  <rect width="900" height="830" fill="#FFFFFF"/>
+  <text class="title" x="450" y="30" text-anchor="middle">鉴权链路</text>
+
+  <rect x="300" y="56" width="320" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="80" text-anchor="middle" dominant-baseline="central">TraceId 过滤器 · 写入日志上下文</text>
+
+  <path d="M460 104L460 136" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="140" width="320" height="48" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="460" y="164" text-anchor="middle" dominant-baseline="central">认证拦截器（order 0）</text>
+
+  <path d="M460 188L460 200" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="204" width="320" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="ts" x="316" y="224" text-anchor="start" dominant-baseline="central">① 取 Authorization 头</text>
+
+  <path d="M460 244L460 252" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="256" width="320" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="ts" x="316" y="276" text-anchor="start" dominant-baseline="central">② 解析 JWT（签名 + 过期时间）</text>
+
+  <path d="M460 296L460 304" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="308" width="320" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="ts" x="316" y="328" text-anchor="start" dominant-baseline="central">③ 查登出黑名单（按 token 的 jti）</text>
+
+  <path d="M460 348L460 356" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="360" width="320" height="40" rx="8" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="ts" x="316" y="380" text-anchor="start" dominant-baseline="central">④ 加载角色与权限（Redis 缓存 10 分钟）</text>
+
+  <path d="M460 400L460 408" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="412" width="320" height="40" rx="8" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+  <text class="ts" x="316" y="432" text-anchor="start" dominant-baseline="central">⑤ 写入当前用户上下文（本线程）</text>
+  <text class="lb" x="636" y="432" text-anchor="start">必须最后</text>
+
+  <path d="M620 224L652 224" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <path d="M620 276L652 276" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <path d="M620 328L652 328" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <rect x="656" y="204" width="214" height="148" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="763" y="264" text-anchor="middle">认证失败 · 40100</text>
+  <text class="lb" x="763" y="288" text-anchor="middle">token 缺失 / 无效 / 过期 / 已登出</text>
+
+  <path d="M460 452L460 496" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="500" width="320" height="48" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text class="th" x="460" y="524" text-anchor="middle" dominant-baseline="central">授权拦截器（order 1）</text>
+
+  <path d="M620 524L652 524" fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <rect x="656" y="500" width="214" height="48" rx="10" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+  <text class="ts" x="763" y="524" text-anchor="middle" dominant-baseline="central">40300 · 无该操作权限</text>
+
+  <path d="M460 548L460 580" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="584" width="320" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="608" text-anchor="middle" dominant-baseline="central">Controller</text>
+
+  <path d="M460 632L460 664" fill="none" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="300" y="668" width="320" height="48" rx="10" fill="#F9FAFB" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text class="th" x="460" y="692" text-anchor="middle" dominant-baseline="central">Service（数据范围在此校验）</text>
+
+  <text class="note" x="30" y="748">· 认证（你是谁）在 order 0、授权（你能不能做）在 order 1 —— 40100 在 order 0 抛出时，授权拦截器根本不会执行</text>
+  <text class="note" x="30" y="772">· ⑤ 必须排在所有可能抛异常的步骤之后：拦截器自身抛异常时，请求结束的清理不会执行，本线程残留的用户上下文会串到下一个请求</text>
+  <text class="note" x="30" y="796">· 权限不写在 token 里：调整角色无需重新登录，权限每次请求从 Redis 读取（缓存 10 分钟，未命中才回源查库）</text>
+  <text class="note" x="30" y="820">· 登出把 token 的 jti 写入黑名单，有效期与 token 剩余时间一致；登录失败次数也有限制</text>
+</svg>

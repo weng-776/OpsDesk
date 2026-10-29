@@ -12,6 +12,7 @@ import com.opsdesk.ticket.dto.TicketQuery;
 import com.opsdesk.ticket.service.AttachmentService;
 import com.opsdesk.ticket.service.TicketCommentBizService;
 import com.opsdesk.ticket.service.TicketCreateService;
+import com.opsdesk.ticket.service.TicketExportService;
 import com.opsdesk.ticket.service.TicketFlowService;
 import com.opsdesk.ticket.service.TicketHistoryBizService;
 import com.opsdesk.ticket.service.TicketQueryService;
@@ -23,6 +24,7 @@ import com.opsdesk.ticket.vo.TicketCreatedVO;
 import com.opsdesk.ticket.vo.TicketDetailVO;
 import com.opsdesk.ticket.vo.TicketHistoryVO;
 import com.opsdesk.ticket.vo.TicketListVO;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -34,6 +36,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -59,20 +66,30 @@ public class TicketController {
     private final AttachmentService attachmentService;
     private final TicketFlowService ticketFlowService;
     private final TicketHistoryBizService ticketHistoryBizService;
+    private final TicketExportService ticketExportService;
 
     public TicketController(TicketCreateService ticketCreateService,
                             TicketQueryService ticketQueryService,
                             TicketCommentBizService ticketCommentBizService,
                             AttachmentService attachmentService,
                             TicketFlowService ticketFlowService,
-                            TicketHistoryBizService ticketHistoryBizService) {
+                            TicketHistoryBizService ticketHistoryBizService,
+                            TicketExportService ticketExportService) {
         this.ticketCreateService = ticketCreateService;
         this.ticketQueryService = ticketQueryService;
         this.ticketCommentBizService = ticketCommentBizService;
         this.attachmentService = attachmentService;
         this.ticketFlowService = ticketFlowService;
         this.ticketHistoryBizService = ticketHistoryBizService;
+        this.ticketExportService = ticketExportService;
     }
+
+    /** 导出文件的 MIME（§8.6 指定的 xlsx 类型） */
+    private static final String XLSX_CONTENT_TYPE =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    /** 文件名里的时间戳：精确到秒，避免同一用户连续点两次拿到同名文件 */
+    private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     /**
      * 创建工单（§8.1）。
@@ -112,6 +129,47 @@ public class TicketController {
     @GetMapping("/mine")
     public Result<PageResult<TicketListVO>> mine(@Valid TicketQuery query) {
         return Result.ok(ticketQueryService.mine(query));
+    }
+
+    /**
+     * 导出工单（§8.6，补单补齐）—— <b>响应是 xlsx 二进制流，不是 {@code Result} 包装</b>。
+     *
+     * <pre>
+     * GET /api/tickets/export?&lt;同 §8.3 的筛选参数&gt;
+     * </pre>
+     *
+     * <p>权限 {@code ticket:export}：RBAC 文档 §8.1/§8.2 明确 EMPLOYEE <b>没有</b>该码，
+     * AGENT / ADMIN 有。所以 EMPLOYEE 调它 → {@code 40300}（不是"导出个空文件"）。
+     *
+     * <h2>⚠️ 三个容易踩的点</h2>
+     * <ul>
+     *   <li><b>不能用 {@code Result} 包</b>：浏览器拿到 {@code {"code":0,...}} 是没法另存为 xlsx 的。
+     *       前端必须用 {@code responseType:'blob'} 接。</li>
+     *   <li><b>{@code page}/{@code size} 不生效</b>：导出不分页，传了也按全量（上限 10000 条）导。
+     *       这不是"忘了处理"，是 §8.6「同 8.3 的筛选参数」+ 导出语义决定的。</li>
+     *   <li><b>文件名要走 RFC 5987</b>：只给 {@code filename="工单导出.xlsx"} 时，
+     *       部分浏览器 / Windows 下载器会把中文渲成乱码，所以额外给 URL 编码的 {@code filename*}。</li>
+     * </ul>
+     *
+     * <p>⚠️ 路径 {@code /export} 是字面量，Spring 会优先匹配它而不是 {@code /{id}}，
+     * 不会被详情接口吃掉（与 {@code /mine} 同理）。
+     */
+    @RequirePermission(PermissionCodes.TICKET_EXPORT)
+    @GetMapping("/export")
+    public void export(@Valid TicketQuery query, HttpServletResponse response) throws IOException {
+        String stamp = LocalDateTime.now().format(FILE_STAMP);
+        String asciiName = "tickets-" + stamp + ".xlsx";
+        String displayName = "工单导出-" + stamp + ".xlsx";
+        String encoded = URLEncoder.encode(displayName, StandardCharsets.UTF_8).replace("+", "%20");
+
+        response.setContentType(XLSX_CONTENT_TYPE);
+        // ⚠️ 刻意不调 setCharacterEncoding：响应体是二进制 xlsx，
+        //    设了会让 Content-Type 变成 "...sheet;charset=UTF-8"（虽无害但语义不对）。
+        //    文件名里的中文另走 URL 编码，与响应字符集无关。
+        response.setHeader("Content-Disposition",
+                "attachment; filename=\"" + asciiName + "\"; filename*=UTF-8''" + encoded);
+
+        ticketExportService.export(query, response.getOutputStream());
     }
 
     /**

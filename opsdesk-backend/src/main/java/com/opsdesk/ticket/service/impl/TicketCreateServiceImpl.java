@@ -226,7 +226,7 @@ public class TicketCreateServiceImpl implements TicketCreateService {
         // 直接从 UserContext 取：它由鉴权拦截器从权限缓存里带出来（D2-04 优化），零查询
         ticket.setDepartmentId(departmentIdOfCurrentUser());
         // assignee_id 保持 null → 进公共待领取池（§8.3 的 ② 靠它才能被所有 AGENT 看到）
-
+        //创建工单号并保存
         insertWithTicketNoRetry(ticket);
 
         // 取回 DB 填的 created_at（见类注释）

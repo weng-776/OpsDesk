@@ -1,17 +1,21 @@
 package com.opsdesk.knowledge.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsdesk.audit.annotation.AuditLog;
 import com.opsdesk.common.BizException;
 import com.opsdesk.common.ErrorCode;
+import com.opsdesk.common.PageResult;
 import com.opsdesk.common.UserContext;
 import com.opsdesk.common.enums.AuditOperation;
 import com.opsdesk.common.enums.AuditResourceType;
 import com.opsdesk.common.enums.KnowledgeDocStatus;
 import com.opsdesk.common.enums.OutboxStatus;
 import com.opsdesk.common.storage.ObjectStorage;
+import com.opsdesk.common.utils.LikeEscaper;
+import com.opsdesk.knowledge.dto.KnowledgeDocumentQuery;
 import com.opsdesk.knowledge.entity.KnowledgeChunk;
 import com.opsdesk.knowledge.entity.KnowledgeDocument;
 import com.opsdesk.knowledge.parser.KnowledgeDocumentTypes;
@@ -32,6 +36,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -221,6 +226,57 @@ public class KnowledgeDocumentManageServiceImpl implements KnowledgeDocumentMana
         eventOutboxService.save(outbox);
     }
 
+    // ==================== 列表（补单 · 知识库文档列表，§10.1） ====================
+
+    /**
+     * 文档分页列表（§10.1）。
+     *
+     * <h2>为什么只查 {@code knowledge_document} 一张表</h2>
+     * {@code chunkCount} 直接读表里的 {@code chunk_count} 列（D12-03 回写）。
+     * 若改成 {@code count(*) knowledge_chunk} 子查询，10 行就是 10 次额外查询，
+     * 而且"快照列 vs 实时统计"必然对不上 —— 详情接口读的也是这一列，
+     * 列表和详情必须是同一个来源，否则用户会发现"列表说 12 段、详情说 13 段"。
+     *
+     * <h2>⚠️ 没有数据范围过滤</h2>
+     * §22：知识库对所有登录角色可见，{@code knowledge_document} 也没有"属于某个部门"的字段。
+     * 所以本方法<b>刻意不加</b>任何可见性条件 —— 这里不是"忘了",是规格如此。
+     */
+    @Override
+    public PageResult<KnowledgeDocumentVO> page(KnowledgeDocumentQuery query) {
+        KnowledgeDocumentQuery q = query == null ? new KnowledgeDocumentQuery() : query;
+        long pageNo = q.pageOrDefault();
+        long size = q.sizeOrDefault();
+
+        // 只取 VO 需要的 6 列 —— 不 SELECT *，也就不会把 file_path 带出来
+        LambdaQueryWrapper<KnowledgeDocument> wrapper = new LambdaQueryWrapper<KnowledgeDocument>()
+                .select(KnowledgeDocument::getId, KnowledgeDocument::getTitle, KnowledgeDocument::getFileName,
+                        KnowledgeDocument::getStatus, KnowledgeDocument::getChunkCount,
+                        KnowledgeDocument::getCreatedAt);
+
+        if (q.getStatus() != null) {
+            wrapper.eq(KnowledgeDocument::getStatus, q.getStatus());
+        }
+
+        String keyword = trimToNull(q.getKeyword());
+        if (keyword != null) {
+            String escaped = LikeEscaper.escape(keyword);
+            // ⚠️ 用 and(...) 把 OR 括起来：否则 OR 会跟其它条件平级，
+            //    把 status 过滤"泄漏"出去（与 TicketQueryServiceImpl / KnowledgeSearchServiceImpl 同一个坑）
+            wrapper.and(w -> w.like(KnowledgeDocument::getTitle, escaped)
+                    .or().like(KnowledgeDocument::getFileName, escaped));
+        }
+
+        // created_at 精度到秒：同秒上传的多份文档只按它排，MySQL 不保证稳定顺序 → 翻页跳行/重复。
+        // 追加唯一列 id 做 tiebreaker（与 §8.3 工单列表同一个理由）
+        wrapper.orderByDesc(KnowledgeDocument::getCreatedAt).orderByDesc(KnowledgeDocument::getId);
+
+        Page<KnowledgeDocument> page = knowledgeDocumentService.page(new Page<>(pageNo, size), wrapper);
+        List<KnowledgeDocumentVO> list = page.getRecords().stream().map(this::toVO).toList();
+        log.debug("[知识库列表] page={} size={} status={} keyword={} total={} 命中 {} 行",
+                pageNo, size, q.getStatus(), keyword, page.getTotal(), list.size());
+        return PageResult.of(list, page.getTotal(), pageNo, size);
+    }
+
     // ==================== 详情（§10.3） ====================
 
     @Override
@@ -229,6 +285,16 @@ public class KnowledgeDocumentManageServiceImpl implements KnowledgeDocumentMana
         if (document == null) {
             throw BizException.notFound("文档不存在");
         }
+        return toVO(document);
+    }
+
+    /**
+     * 实体 → 出参（列表与详情共用，保证两边字段口径一致）。
+     *
+     * <p>⚠️ <b>不带 {@code filePath}</b>：对象键是存储内部细节，对前端无用，
+     * 暴露出去只是多一个信息点。列表和详情都必须遵守这一条。
+     */
+    private KnowledgeDocumentVO toVO(KnowledgeDocument document) {
         return new KnowledgeDocumentVO(
                 document.getId(),
                 document.getTitle(),
@@ -408,5 +474,19 @@ public class KnowledgeDocumentManageServiceImpl implements KnowledgeDocumentMana
             return String.format("%.1fKB", bytes / 1024.0);
         }
         return String.format("%.1fMB", bytes / (1024.0 * 1024));
+    }
+
+    /**
+     * 空白串归一成 {@code null}。
+     *
+     * <p>列表的 {@code keyword} 用得上：前端搜索框清空后往往传 {@code ?keyword=}，
+     * 那不是"搜空串"，是"不筛" —— 不归一的话会拼出 {@code LIKE '%%'}，白白扫一遍表。
+     */
+    private static String trimToNull(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }
