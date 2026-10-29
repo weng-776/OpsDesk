@@ -1,0 +1,32 @@
+// ============================================================
+// 全局样式入口（F7-01 只做最小重置，业务样式留给后续工单）
+// ============================================================
+
+// Element Plus 主题变量覆盖的落点在这里，但本次**不启用**：
+// 要改主色需要让 ElementPlusResolver 走 sass（importStyle: 'sass'），
+// 再用 vite 的 css.preprocessorOptions.scss.additionalData 引入
+//   @use "element-plus/theme-chalk/src/common/var.scss" with ($colors: (...));
+// 那会把整个 theme-chalk 拖进编译，等真有设计稿再开，别现在图省事。
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--el-text-color-primary);
+  background-color: var(--el-bg-color-page);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
