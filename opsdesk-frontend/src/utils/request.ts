@@ -138,6 +138,10 @@ async function handleUnauthorized(message: string): Promise<void> {
 }
 
 service.interceptors.response.use(
+  // 这里的 `any` 是 axios 类型决定的、唯一躲不掉的一处：
+  // 拦截器的签名要求返回 AxiosResponse，而我们要把整个响应换成「解包后的 data」。
+  // 用 any 把它挡在拦截器边界上，业务侧只经 `request<T>()` 拿类型 —— 全项目仅此一处。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (response: AxiosResponse): any => {
     // a) 二进制：原样返回整个响应，业务层要读 Content-Disposition 和 blob 本体
     if (response.config.responseType === 'blob') {
@@ -159,7 +163,9 @@ service.interceptors.response.use(
     // 防御性分支：后端 HTTP 与 code 对齐，正常不会走到这里；
     // 万一将来某个接口破了约定，也不能静默吞掉
     const message = errorMessageOf(body.code, body.message)
-    ElMessage.error(message)
+    if (!(response.config as RequestConfig).silent) {
+      ElMessage.error(message)
+    }
     return Promise.reject(new BizError(body.code, message))
   },
 
@@ -187,15 +193,41 @@ service.interceptors.response.use(
     // 已知 code 用本地中文表；未知 code 用后端 message；都没有才用 HTTP 状态兜底
     const message = errorMessageOf(code, backendMessage || `请求失败（HTTP ${response.status}）`)
 
-    if (code === ErrorCode.UNAUTHORIZED) {
+    const options = (error.config ?? {}) as RequestConfig
+
+    if (code === ErrorCode.UNAUTHORIZED && !options.skipAuthRedirect) {
       await handleUnauthorized(message)
-    } else {
+    } else if (!options.silent) {
       ElMessage.error(message)
     }
 
     return Promise.reject(new BizError(code, message))
   },
 )
+
+/**
+ * 请求配置的扩展项。
+ *
+ * 默认行为（两个开关都不传）就是 F7-01 定下的全局策略：
+ * 40100 → 清 token + 跳登录 + 弹提示；其余失败 → 弹提示。
+ */
+export interface RequestConfig extends AxiosRequestConfig {
+  /**
+   * 401 时不触发「清 token + 跳 /login」。
+   *
+   * 只给**登录接口**用：密码输错时后端返回的也是 40100，
+   * 若走全局策略，用户会先看到「登录已过期」再看到「用户名或密码错误」，
+   * 而且会白清一次 token、白跳一次路由。
+   */
+  skipAuthRedirect?: boolean
+  /**
+   * 失败时不自动弹提示，由调用方决定文案。
+   *
+   * 同样给登录页用 —— 「40100 = 登录已过期」这套全局文案在登录场景是错的，
+   * 登录失败必须显示「用户名或密码错误」（且不能区分账号不存在与密码错）。
+   */
+  silent?: boolean
+}
 
 /**
  * 业务层唯一的请求入口。
@@ -211,6 +243,6 @@ service.interceptors.response.use(
  *
  * 失败时 reject 一个 `BizError`（已弹过提示，业务层通常不用再处理）。
  */
-export function request<T>(config: AxiosRequestConfig): Promise<T> {
+export function request<T>(config: RequestConfig): Promise<T> {
   return service.request(config) as unknown as Promise<T>
 }

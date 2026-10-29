@@ -10,20 +10,57 @@
  *
  * ⚠️ 这不是业务页面，F7-02 起会被真正的首页替换掉。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { me } from '@/api/auth'
 import PagePlaceholder from '@/components/PagePlaceholder.vue'
-import { TicketStatus, labelOf, tagTypeOf } from '@/constants/enums'
+import { Role, TicketStatus, labelOf, tagTypeOf } from '@/constants/enums'
 import { useUserStore } from '@/stores/user'
 import { formatDateTime, formatFileSize, formatRelative } from '@/utils/format'
 import { BizError } from '@/utils/request'
 import type { LoginUserVO } from '@/types/auth'
 
+const router = useRouter()
 const userStore = useUserStore()
 
-/** 自检结果 */
-const result = ref<{ ok: boolean; text: string; user: LoginUserVO | null } | null>(null)
+/** 登出请求进行中 */
+const logoutLoading = ref(false)
+
+/**
+ * 登出：调接口把 token 拉黑 → 清本地 → 回登录页。
+ *
+ * `store.logout()` 内部用 finally 清本地，所以即使后端挂了 / token 已过期，
+ * 也不会把用户卡在「点了登出还在登录态」的怪状态。
+ */
+async function handleLogout(): Promise<void> {
+  logoutLoading.value = true
+  try {
+    await userStore.logout()
+  } finally {
+    logoutLoading.value = false
+    await router.replace('/login')
+  }
+}
+
+/** 主角色（顶栏只展示第一个，完整角色列表留给 F7-03 的用户菜单） */
+const primaryRole = computed<string>(() => userStore.roles[0] ?? '')
+
+/**
+ * 自检结果。
+ *
+ * ⚠️ 初始值直接取 store 里已回源的用户，**不再 onMounted 自己打一次** ——
+ * 路由守卫进页面前已经调过 `/me`（`ensureProfile`），这里再打一次就是重复请求。
+ */
+const result = ref<{ ok: boolean; text: string; user: LoginUserVO | null } | null>(
+  userStore.user
+    ? {
+        ok: true,
+        text: `已登录：${userStore.user.nickname}（${userStore.user.username}）`,
+        user: userStore.user,
+      }
+    : null,
+)
 /** 请求进行中 */
 const loading = ref(false)
 
@@ -49,10 +86,9 @@ async function checkMe(): Promise<void> {
   }
 }
 
-// 进页面就打一次：未登录时应该只出现 1 个 401、1 条提示、1 次跳转
-onMounted(checkMe)
-
-/** 格式化函数的演示数据 */
+/**
+ * 格式化函数的演示数据
+ */
 const demo = (() => {
   // 后端给的是「无时区后缀的 ISO 串」，用 toISOString() 会变成 UTC 导致差 8 小时，
   // 这里按本地时间拼一个同样格式的串，才是后端真实给的样子。
@@ -71,10 +107,28 @@ const demo = (() => {
 </script>
 
 <template>
-  <PagePlaceholder
-    title="F7-01 工程自检"
-    description="Vue3 + TypeScript + Vite + Element Plus 地基已就绪。本页只验证请求层、类型体系、枚举常量与格式化函数是否可用，不含任何业务功能。"
-  >
+  <div class="home">
+    <!--
+      极简顶栏：F7-02 要证明「登录成功 → 顶栏显示昵称」。
+      真正的布局（侧边栏 + 菜单 + 用户下拉）是 F7-03，这里只是临时壳子。
+    -->
+    <header class="topbar">
+      <span class="topbar__brand">OpsDesk</span>
+      <div class="topbar__right">
+        <span class="topbar__user">{{ userStore.user?.nickname ?? '未登录' }}</span>
+        <el-tag v-if="primaryRole" :type="tagTypeOf(Role, primaryRole)" size="small" disable-transitions>
+          {{ labelOf(Role, primaryRole) }}
+        </el-tag>
+        <el-button link type="primary" :loading="logoutLoading" @click="handleLogout">
+          退出登录
+        </el-button>
+      </div>
+    </header>
+
+    <PagePlaceholder
+      title="F7-01 工程自检"
+      description="Vue3 + TypeScript + Vite + Element Plus 地基已就绪。本页只验证请求层、类型体系、枚举常量与格式化函数是否可用，不含任何业务功能。"
+    >
     <template #extra>
       <el-button type="primary" :loading="loading" @click="checkMe">请求 /api/auth/me</el-button>
     </template>
@@ -125,10 +179,42 @@ const demo = (() => {
         </div>
       </div>
     </div>
-  </PagePlaceholder>
+    </PagePlaceholder>
+  </div>
 </template>
 
 <style scoped lang="scss">
+.home {
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 24px;
+  background-color: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+
+  &__brand {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  &__right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  &__user {
+    color: var(--el-text-color-regular);
+    font-size: 13px;
+  }
+}
+
 .check {
   display: flex;
   flex-direction: column;

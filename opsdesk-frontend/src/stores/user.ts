@@ -39,6 +39,15 @@ export const useUserStore = defineStore('user', () => {
   /** 权限码列表，来源是 user.permissions，单独存一份方便判断 */
   const permissions = ref<string[]>(getStoredPermissions())
 
+  /**
+   * 用户信息是否已从**服务端**回源过。
+   *
+   * ⚠️ 判据不能是 `user !== null` —— user 可能是 localStorage 里的旧缓存。
+   * 规格 §2.2 要求「管理员改角色后无需重新登录即生效」，所以权限必须每次刷新都回源 `/me`，
+   * 只有 login / fetchMe 拿到真实响应后才置 true（见路由守卫 `router/guard.ts`）。
+   */
+  const profileLoaded = ref(false)
+
   // ==================== getters ====================
 
   /** 角色码列表 */
@@ -68,12 +77,13 @@ export const useUserStore = defineStore('user', () => {
 
   // ==================== actions ====================
 
-  /** 把用户信息写进 state 与 localStorage */
+  /** 把用户信息写进 state 与 localStorage（**只应由服务端响应调用**） */
   function applyUser(nextUser: LoginUserVO): void {
     user.value = nextUser
     permissions.value = nextUser.permissions ?? []
     setStoredUser(nextUser)
     setStoredPermissions(permissions.value)
+    profileLoaded.value = true
   }
 
   /** 登录成功后落地 token + 用户信息，并复位 401 去重标志 */
@@ -106,6 +116,16 @@ export const useUserStore = defineStore('user', () => {
   }
 
   /**
+   * 确保用户信息已回源：已加载过就直接返回，否则调 `/me`。
+   *
+   * 路由守卫用这个，避免每次导航都打一次 `/me`（只在 `profileLoaded === false` 时打）。
+   */
+  async function ensureProfile(): Promise<LoginUserVO> {
+    if (profileLoaded.value && user.value) return user.value
+    return fetchMe()
+  }
+
+  /**
    * 登出：先通知后端把 token 拉黑，再清本地。
    *
    * 用 `finally` 保证「后端挂了 / token 已过期」也能清干净本地，
@@ -124,6 +144,7 @@ export const useUserStore = defineStore('user', () => {
     token.value = ''
     user.value = null
     permissions.value = []
+    profileLoaded.value = false
     clearAuthStorage()
   }
 
@@ -131,6 +152,7 @@ export const useUserStore = defineStore('user', () => {
     token,
     user,
     permissions,
+    profileLoaded,
     roles,
     isLoggedIn,
     isAdmin,
@@ -140,6 +162,7 @@ export const useUserStore = defineStore('user', () => {
     applyUser,
     login,
     fetchMe,
+    ensureProfile,
     logout,
     reset,
   }
