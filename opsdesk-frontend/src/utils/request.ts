@@ -29,10 +29,21 @@ export class BizError extends Error {
   /** 后端业务码；网络层错误（超时 / 断网）固定为 -1 */
   code: number
 
-  constructor(code: number, message: string) {
+  /**
+   * 后端返回的**原始** message（没有被本地中文表覆盖）。
+   *
+   * 为什么需要：本地中文表是按 code 兜底的通用文案，有些场景后端给的原因更具体。
+   * 典型是 40900 —— 全局表写「状态已变更，请刷新后重试」，
+   * 但创建工单的幂等重试会返回「同一请求正在处理中，请勿重复提交」，
+   * 两者含义完全不同，直接展示通用文案会把人带偏。
+   */
+  serverMessage: string
+
+  constructor(code: number, message: string, serverMessage = '') {
     super(message)
     this.name = 'BizError'
     this.code = code
+    this.serverMessage = serverMessage || message
   }
 }
 
@@ -174,7 +185,9 @@ service.interceptors.response.use(
 
     // 网络层错误：超时 / 断网 / 后端没起，此时没有 response
     if (!response) {
-      ElMessage.error(NETWORK_ERROR_MESSAGE)
+      if (!(error.config as RequestConfig | undefined)?.silent) {
+        ElMessage.error(NETWORK_ERROR_MESSAGE)
+      }
       return Promise.reject(new BizError(NETWORK_ERROR_CODE, NETWORK_ERROR_MESSAGE))
     }
 
@@ -201,7 +214,7 @@ service.interceptors.response.use(
       ElMessage.error(message)
     }
 
-    return Promise.reject(new BizError(code, message))
+    return Promise.reject(new BizError(code, message, backendMessage))
   },
 )
 

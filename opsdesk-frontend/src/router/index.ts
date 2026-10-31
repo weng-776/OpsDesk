@@ -66,7 +66,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'tickets/create',
         name: 'TicketCreate',
-        component: PlaceholderPage,
+        component: () => import('@/views/ticket/TicketCreate.vue'),
         meta: { title: '提交工单', menuPerm: 'menu:ticket:create' },
       },
       {

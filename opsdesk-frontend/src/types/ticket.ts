@@ -69,3 +69,38 @@ export interface TicketQueryParams {
   /** 每页条数，≤ 50 */
   size?: number
 }
+
+/**
+ * 创建工单入参（`POST /api/tickets`）。
+ *
+ * 字段与后端 `TicketCreateDTO` 逐项对齐：
+ * - `title` 必填 ≤128
+ * - `description` 必填 ≤4000
+ * - `type` / `category` 必填（枚举白名单由 Jackson 反序列化保证，传错值直接 40001）
+ * - `priority` 可空，后端缺省 `P3`
+ */
+export interface TicketCreatePayload {
+  /** 标题，≤128 */
+  title: string
+  /** 描述，≤4000 */
+  description: string
+  /** 类型 */
+  type: TicketTypeValue
+  /** 分类 */
+  category: TicketCategoryValue
+  /** 优先级，不传则后端默认 P3 */
+  priority?: TicketPriorityValue
+}
+
+/**
+ * 创建工单出参（`POST /api/tickets` 的 data）。
+ *
+ * ⚠️ 这个对象也是后端幂等缓存的载体：同一 `Idempotency-Key` 重复提交时，
+ * 后端会把首次的 `{ id, ticketNo }` 原样返回 —— 所以拿到它之后跳详情页是安全的。
+ */
+export interface TicketCreatedVO {
+  /** 工单主键 */
+  id: number
+  /** 工单号：OD + yyyyMMdd + 5 位日序列，如 OD2026101000001 */
+  ticketNo: string
+}
