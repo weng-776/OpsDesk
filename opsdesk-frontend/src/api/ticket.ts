@@ -223,3 +223,73 @@ export function exportTickets(
 ): Promise<void> {
   return downloadFile('/tickets/export', { ...params }, '工单导出.xlsx')
 }
+
+// ==================== 状态流转（F8-02，§8.12 的 11 个动作） ====================
+
+/**
+ * 开始处理（`POST /api/tickets/{id}/start`）—— `ASSIGNED → IN_PROGRESS`。
+ *
+ * ⚠️ **无请求体**（后端签名里没有 @RequestBody）。
+ */
+export function start(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/start`, method: 'post', silent: true })
+}
+
+/**
+ * 转派（`POST /api/tickets/{id}/transfer`）—— `ASSIGNED → ASSIGNED`，只换处理人。
+ *
+ * 请求体 `{ assigneeId }`（与 assign 同构）。
+ * ⚠️ 派工单说还要「备注」，但后端**不收**（没有对应字段），所以这里也没有 remark。
+ */
+export function transfer(id: number, assigneeId: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({
+    url: `/tickets/${id}/transfer`,
+    method: 'post',
+    data: { assigneeId },
+    silent: true,
+  })
+}
+
+/** 挂起（`POST /api/tickets/{id}/hold`）—— `IN_PROGRESS → WAITING_USER`，SLA 暂停。⚠️ 无请求体 */
+export function hold(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/hold`, method: 'post', silent: true })
+}
+
+/** 恢复（`POST /api/tickets/{id}/resume`）—— `WAITING_USER → IN_PROGRESS`，SLA 顺延。⚠️ 无请求体 */
+export function resume(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/resume`, method: 'post', silent: true })
+}
+
+/** 提交解决（`POST /api/tickets/{id}/resolve`）—— `IN_PROGRESS → WAITING_CONFIRM`。⚠️ 无请求体 */
+export function resolve(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/resolve`, method: 'post', silent: true })
+}
+
+/** 关闭（`POST /api/tickets/{id}/close`）—— `WAITING_CONFIRM → CLOSED`。⚠️ 无请求体 */
+export function close(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/close`, method: 'post', silent: true })
+}
+
+/** 驳回重新打开（`POST /api/tickets/{id}/reject`）—— 仅创建人。⚠️ 无请求体 */
+export function reject(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/reject`, method: 'post', silent: true })
+}
+
+/**
+ * 撤销（`POST /api/tickets/{id}/cancel`）。
+ *
+ * ⚠️ 请求体字段是 **`reason`**（不是 remark），必填、≤200，不带会 40001。
+ */
+export function cancel(id: number, reason: string): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({
+    url: `/tickets/${id}/cancel`,
+    method: 'post',
+    data: { reason },
+    silent: true,
+  })
+}
+
+/** 强制关闭（`POST /api/tickets/{id}/force-close`）—— 仅 ADMIN。⚠️ 无请求体 */
+export function forceClose(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}/force-close`, method: 'post', silent: true })
+}

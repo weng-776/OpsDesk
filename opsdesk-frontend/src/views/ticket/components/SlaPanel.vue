@@ -42,6 +42,14 @@ function remainingOf(deadline: string | null): { text: string; expired: boolean 
 const responseRemaining = computed(() => remainingOf(props.ticket.responseDeadline))
 const resolutionRemaining = computed(() => remainingOf(props.ticket.resolutionDeadline))
 
+/** 这两个状态下 SLA 是暂停的（§9.4：WAITING_USER / WAITING_CONFIRM 期间暂停并顺延） */
+const isPaused = computed<boolean>(
+  () => props.ticket.status === 'WAITING_USER' || props.ticket.status === 'WAITING_CONFIRM',
+)
+const pausedReason = computed<string>(() =>
+  props.ticket.status === 'WAITING_USER' ? '等待用户补充' : '等待用户确认',
+)
+
 /** 只有后端判定超时，才把剩余时间标红 */
 const responseBreached = computed(() => props.ticket.slaResponseState === 'BREACHED')
 const resolutionBreached = computed(() => props.ticket.slaResolutionState === 'BREACHED')
@@ -78,6 +86,12 @@ const resolutionBreached = computed(() => props.ticket.slaResolutionState === 'B
     </div>
 
     <el-divider class="sla-panel__divider" />
+
+    <!-- 挂起 / 待确认期间 SLA 是暂停的：后端不直接给「是否暂停」，由状态推导 -->
+    <div v-if="isPaused" class="sla-panel__paused">
+      <el-tag type="warning" size="small" effect="plain" disable-transitions>已暂停</el-tag>
+      <span class="sla-panel__paused-text">{{ pausedReason }}，SLA 计时暂停并顺延</span>
+    </div>
 
     <div class="sla-panel__meta">
       <div class="sla-panel__meta-row">
@@ -130,6 +144,18 @@ const resolutionBreached = computed(() => props.ticket.slaResolutionState === 'B
 
   &__divider {
     margin: 14px 0;
+  }
+
+  &__paused {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  &__paused-text {
+    color: var(--el-color-warning);
+    font-size: 12px;
   }
 
   &__meta {

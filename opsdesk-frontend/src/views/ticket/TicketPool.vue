@@ -16,6 +16,7 @@ import { ElMessage } from 'element-plus'
 
 import { accept, assign, exportTickets, list } from '@/api/ticket'
 import { ErrorCode } from '@/constants/errorCode'
+import { isStaleError } from '@/composables/useTicketActions'
 import { TicketCategory, TicketPriority, labelOf, tagTypeOf } from '@/constants/enums'
 import { formatDateTime } from '@/utils/format'
 import { BizError } from '@/utils/request'
@@ -122,12 +123,13 @@ function handleReset(): void {
  * @returns true 表示已按冲突处理（调用方不要再弹通用错误）
  */
 function handleTakenAway(error: BizError): boolean {
-  const conflict = error.code === ErrorCode.CONFLICT
-  const invisible = error.code === ErrorCode.DATA_SCOPE_DENIED
-  if (!conflict && !invisible) return false
+  // 判据统一走 composables/useTicketActions 的 isStaleError，避免各处各写一份
+  if (!isStaleError(error.code)) return false
 
   ElMessage.warning(
-    invisible ? '该工单已被他人接单（你已无权查看该工单），列表已刷新' : '该工单已被他人接单，列表已刷新',
+    error.code === ErrorCode.DATA_SCOPE_DENIED
+      ? '该工单已被他人接单（你已无权查看该工单），列表已刷新'
+      : '该工单已被他人接单，列表已刷新',
   )
   void fetchList()
   return true

@@ -16,7 +16,7 @@ import { detail } from '@/api/ticket'
 import SlaTag from '@/components/SlaTag.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { ErrorCode } from '@/constants/errorCode'
-import { TicketOperation, TicketPriority, TicketType, labelOf, tagTypeOf } from '@/constants/enums'
+import { TicketPriority, TicketType, labelOf, tagTypeOf } from '@/constants/enums'
 import { formatDateTime } from '@/utils/format'
 import { BizError } from '@/utils/request'
 import type { TicketDetailVO } from '@/types/ticket'
@@ -26,6 +26,7 @@ import BasicInfo from './components/BasicInfo.vue'
 import CommentList from './components/CommentList.vue'
 import HistoryTimeline from './components/HistoryTimeline.vue'
 import SlaPanel from './components/SlaPanel.vue'
+import TicketActions from './components/TicketActions.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,6 +39,15 @@ const loading = ref(false)
 /** 失败时的业务码：40301 / 40400 / 其他 */
 const errorCode = ref<number | null>(null)
 const errorText = ref('')
+
+/**
+ * 子区块重挂令牌。
+ *
+ * 动作成功后详情 VO 换了，但评论 / 附件 / 历史三个子组件各自持有数据，
+ * 光换父组件的 VO 它们不会更新（**历史时间线必须出现新的一条**）。
+ * 每成功一次动作就 +1，子组件 `:key` 变化 → 重新挂载 → 各自重新拉数据。
+ */
+const reloadToken = ref(0)
 
 async function load(): Promise<void> {
   ticket.value = null
@@ -64,6 +74,15 @@ async function load(): Promise<void> {
 
 // 同一个组件实例内切换 id（比如从一张工单跳到另一张）也要重新拉
 watch(ticketId, load, { immediate: true })
+
+/**
+ * 动作成功：直接用响应体里的最新快照，**不再发一次详情请求**（§8.12 明确返回最新 VO）。
+ * 同时 bump 令牌，让三个子区块重新拉数据。
+ */
+function onActionUpdated(next: TicketDetailVO): void {
+  ticket.value = next
+  reloadToken.value += 1
+}
 
 function backToList(): void {
   void router.push('/tickets')
@@ -143,39 +162,25 @@ function backToList(): void {
             <p class="detail__desc">{{ ticket.description }}</p>
           </el-card>
 
-          <AttachmentList :ticket-id="ticket.id" />
-          <CommentList :ticket-id="ticket.id" />
-          <HistoryTimeline :ticket-id="ticket.id" />
+          <AttachmentList :key="`att-${reloadToken}`" :ticket-id="ticket.id" />
+          <CommentList :key="`cmt-${reloadToken}`" :ticket-id="ticket.id" />
+          <HistoryTimeline :key="`his-${reloadToken}`" :ticket-id="ticket.id" />
         </div>
 
         <!-- 右栏 -->
         <aside class="detail__side">
           <SlaPanel :ticket="ticket" />
 
-          <!--
-            动作区占位：F8-02 在这里接入真实按钮。
-            本单只把后端算好的 canOperate 只读展示出来，证明这个字段是通的。
-            ⚠️ canOperate 不是安全边界，每个流转接口后端都会独立校验。
-          -->
           <el-card shadow="never">
             <template #header>
               <span class="detail__section-title">可用操作</span>
             </template>
 
-            <div v-if="ticket.canOperate?.length" class="detail__ops">
-              <el-tag
-                v-for="operation in ticket.canOperate"
-                :key="operation"
-                :type="tagTypeOf(TicketOperation, operation)"
-                size="small"
-                disable-transitions
-              >
-                {{ labelOf(TicketOperation, operation) }}
-              </el-tag>
-            </div>
-            <p v-else class="detail__ops-empty">当前状态下没有可执行的流转动作</p>
-
-            <p class="detail__ops-tip">按钮由 F8-02 接入，此处仅只读展示后端返回的动作</p>
+            <!--
+              ⚠️ canOperate 是渲染依据，不是安全边界（§16.8）：
+              前端只保证「不显示必然失败的按钮」，后端每个流转接口仍独立校验。
+            -->
+            <TicketActions :ticket="ticket" @updated="onActionUpdated" @stale="load" />
           </el-card>
         </aside>
       </div>
