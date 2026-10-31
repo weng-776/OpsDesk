@@ -48,11 +48,11 @@ const routes: RouteRecordRaw[] = [
     component: DefaultLayout,
     redirect: '/dashboard',
     children: [
-      // ---------- 工作台 ----------
+      // ---------- 工作台（F7-07：员工端首页，登录后的默认落地页） ----------
       {
         path: 'dashboard',
         name: 'Dashboard',
-        component: PlaceholderPage,
+        component: () => import('@/views/dashboard/EmployeeHome.vue'),
         meta: { title: '工作台', menuPerm: 'menu:dashboard' },
       },
 
