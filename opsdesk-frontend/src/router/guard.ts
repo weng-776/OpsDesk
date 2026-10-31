@@ -1,10 +1,11 @@
 /**
  * 路由守卫（F7-02 红区 —— 写漏等于「未登录可进所有页面」）。
  *
- * 三件事，顺序不能乱：
+ * 四件事，顺序不能乱：
  * 1. 已登录访问 /login → 直接回首页（避免登录后又看到登录页）
  * 2. 无 token → 跳 /login，并把原目标塞进 `?redirect=`，登录后能回跳
  * 3. 有 token 但用户信息没回源 → 先 `/me` 再放行；**失败必须清 token 并跳登录**
+ * 4. 持有该路由的 MENU 权限码才放行，否则跳 `/403`（不是静默回首页）
  *
  * ⚠️ 为什么第 3 步要回源而不是信 localStorage：
  * 规格 §2.2 明确「管理员改角色后无需重新登录即生效」，
@@ -17,6 +18,9 @@ import { useUserStore } from '@/stores/user'
 
 /** 登录页路径 */
 const LOGIN_PATH = '/login'
+
+/** 无权限页路径 */
+const FORBIDDEN_PATH = '/403'
 
 /**
  * 免登录白名单。
@@ -62,6 +66,14 @@ export function setupRouterGuard(router: Router): void {
         userStore.reset()
         return { path: LOGIN_PATH, query: buildRedirect(to.fullPath) }
       }
+    }
+
+    // ④ 菜单权限：持有该路由的 MENU 码才放行
+    //    ⚠️ 无权限必须跳 /403，**不能静默回首页** —— 用户会以为自己点错了，反复重试
+    //    ⚠️ 这里只挡「页面可见性」，真正的数据安全靠后端每个接口的 API 权限校验
+    const menuPerm = to.meta.menuPerm
+    if (menuPerm && !userStore.hasPerm(menuPerm)) {
+      return { path: FORBIDDEN_PATH }
     }
 
     return true
