@@ -94,7 +94,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'pool',
         name: 'TicketPool',
-        component: PlaceholderPage,
+        component: () => import('@/views/ticket/TicketPool.vue'),
         meta: { title: '待受理池', menuPerm: 'menu:ticket:pool' },
       },
 

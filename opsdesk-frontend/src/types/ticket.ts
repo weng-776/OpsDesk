@@ -64,6 +64,8 @@ export interface TicketListVO {
 export interface TicketQueryParams {
   /** 状态筛选 */
   status?: TicketStatusValue
+  /** 优先级筛选 */
+  priority?: TicketPriorityValue
   /** 关键字：后端匹配 ticket_no / title */
   keyword?: string
   /** 页码，从 1 开始 */

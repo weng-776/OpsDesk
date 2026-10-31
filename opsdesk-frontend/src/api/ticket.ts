@@ -4,6 +4,7 @@
  * 全部通过 `request<T>()` 走统一拦截器 —— 组件里禁止直接 import axios。
  */
 
+import { downloadFile } from '@/utils/download'
 import { request } from '@/utils/request'
 import type { PageResult } from '@/types/common'
 import type {
@@ -164,4 +165,61 @@ export function uploadAttachment(
       }
     },
   })
+}
+
+// ==================== 待受理池（F8-01） ====================
+
+/**
+ * 接单（`POST /api/tickets/{id}/accept`）—— `OPEN → ASSIGNED`，处理人 = 当前用户。
+ *
+ * 权限 `ticket:accept`（AGENT / ADMIN）。
+ *
+ * ⚠️ **并发冲突**：两个 AGENT 同时接同一单时，后到的那位会收到 **40900**
+ * （工单已经不是 `OPEN`，状态机判定为非法流转）。页面必须专门提示「已被他人接单」并刷新列表，
+ * 不能笼统显示「操作失败」。
+ *
+ * `silent: true` 的原因：全局错误表对 40900 的文案是「状态已变更，请刷新后重试」，
+ * 在这里不够具体，文案由调用方决定。
+ */
+export function accept(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({
+    url: `/tickets/${id}/accept`,
+    method: 'post',
+    silent: true,
+  })
+}
+
+/**
+ * 分派（`POST /api/tickets/{id}/assign`）—— `OPEN → ASSIGNED`，处理人 = 指定的人。
+ *
+ * 权限 `ticket:assign`（AGENT / ADMIN）。`assigneeId` 必须是启用的 AGENT / ADMIN，
+ * 否则后端返回 40001。
+ *
+ * ⚠️ 前端拿不到「AGENT 列表」：`GET /api/users` 要 `user:list`，AGENT 调会 40300。
+ * 所以分派弹窗让用户手填 ID（已与需求方确认的方案）。
+ */
+export function assign(id: number, assigneeId: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({
+    url: `/tickets/${id}/assign`,
+    method: 'post',
+    data: { assigneeId },
+    silent: true,
+  })
+}
+
+/**
+ * 导出工单（`GET /api/tickets/export`）—— 响应是 **xlsx 二进制流**，不是 JSON。
+ *
+ * - 权限 `ticket:export`（AGENT / ADMIN，EMPLOYEE 没有）
+ * - **不传 `page` / `size`**：导出不分页，传了也无效
+ * - 后端上限 10000 条，超出**静默截断**（不报错）
+ * - 空结果也会返回「只有表头」的 xlsx，不是失败
+ * - 必须走 `downloadFile`（blob + Authorization），**不能 `window.open`**
+ *
+ * @param params 当前筛选条件（status / priority / keyword），不含分页参数
+ */
+export function exportTickets(
+  params: Omit<TicketQueryParams, 'page' | 'size'> = {},
+): Promise<void> {
+  return downloadFile('/tickets/export', { ...params }, '工单导出.xlsx')
 }
