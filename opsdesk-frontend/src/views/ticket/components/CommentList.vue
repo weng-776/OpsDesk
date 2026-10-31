@@ -131,7 +131,12 @@ onMounted(() => load(true))
         <el-empty description="暂无处理记录" :image-size="70" />
       </div>
 
-      <div v-for="item in items" :key="item.id" class="comment__item">
+      <div
+        v-for="item in items"
+        :key="item.id"
+        class="comment__item"
+        :class="{ 'comment__item--internal': item.internal }"
+      >
         <div class="comment__meta">
           <span class="comment__user">{{ item.userName }}</span>
           <el-tag v-if="item.internal" type="warning" size="small" disable-transitions>内部</el-tag>
@@ -164,7 +169,17 @@ onMounted(() => load(true))
         <el-checkbox v-if="canInternal" v-model="internal" class="comment__internal">
           仅 IT 内部可见
         </el-checkbox>
-        <span v-else class="comment__form-tip">提交后所有可见该工单的人都能看到</span>
+        <!-- ⚠️ 不能写 v-else：AGENT 有勾选框，但提示语也要显示（v-else 会让它整个不渲染） -->
+        <span
+          class="comment__form-tip"
+          :class="{ 'comment__form-tip--internal': canInternal && internal }"
+        >
+          {{
+            canInternal && internal
+              ? '这条只有 IT 同事能看到，提交人看不到'
+              : '提交后所有可见该工单的人都能看到'
+          }}
+        </span>
 
         <el-button type="primary" :loading="submitting" @click="submit">发表评论</el-button>
       </div>
@@ -209,6 +224,19 @@ onMounted(() => load(true))
     &:last-child {
       border-bottom: none;
     }
+
+    /**
+     * 内部评论的视觉区分：左侧橙色竖线 + 淡底。
+     * 目的是让 AGENT 一眼看出「这条员工看不到」，避免误以为已经和用户沟通过了。
+     */
+    &--internal {
+      margin: 6px 0;
+      padding: 10px 12px;
+      background-color: var(--el-color-warning-light-9);
+      border-bottom: none;
+      border-left: 3px solid var(--el-color-warning);
+      border-radius: 0 4px 4px 0;
+    }
   }
 
   &__meta {
@@ -252,6 +280,11 @@ onMounted(() => load(true))
   &__form-tip {
     color: var(--el-text-color-secondary);
     font-size: 12px;
+
+    &--internal {
+      color: var(--el-color-warning);
+      font-weight: 500;
+    }
   }
 }
 </style>

@@ -49,8 +49,17 @@ const errorText = ref('')
  */
 const reloadToken = ref(0)
 
+/** 描述是否展开（长文本默认折叠，否则一张长描述会把整个处理页撑爆） */
+const descExpanded = ref(false)
+/** 超过这个长度才折叠 —— 短描述折起来反而多一次点击 */
+const DESC_COLLAPSE_THRESHOLD = 200
+const isDescLong = computed<boolean>(
+  () => (ticket.value?.description?.length ?? 0) > DESC_COLLAPSE_THRESHOLD,
+)
+
 async function load(): Promise<void> {
   ticket.value = null
+  descExpanded.value = false
   errorCode.value = null
   errorText.value = ''
 
@@ -159,7 +168,21 @@ function backToList(): void {
             <template #header>
               <span class="detail__section-title">问题描述</span>
             </template>
-            <p class="detail__desc">{{ ticket.description }}</p>
+            <div
+              class="detail__desc-wrap"
+              :class="{ 'is-collapsed': isDescLong && !descExpanded }"
+            >
+              <p class="detail__desc">{{ ticket.description }}</p>
+            </div>
+            <el-button
+              v-if="isDescLong"
+              link
+              type="primary"
+              class="detail__desc-toggle"
+              @click="descExpanded = !descExpanded"
+            >
+              {{ descExpanded ? '收起' : '展开全文' }}
+            </el-button>
           </el-card>
 
           <AttachmentList :key="`att-${reloadToken}`" :ticket-id="ticket.id" />
@@ -269,6 +292,30 @@ function backToList(): void {
   &__section-title {
     font-size: 15px;
     font-weight: 600;
+  }
+
+  &__desc-wrap {
+    position: relative;
+
+    // 折叠时截断 + 底部渐隐，暗示"还有内容"
+    &.is-collapsed {
+      max-height: 120px;
+      overflow: hidden;
+
+      &::after {
+        content: '';
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 40px;
+        background: linear-gradient(to bottom, transparent, var(--el-bg-color));
+      }
+    }
+  }
+
+  &__desc-toggle {
+    margin-top: 6px;
   }
 
   &__desc {

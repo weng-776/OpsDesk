@@ -8,7 +8,7 @@
  *
  * 后端已按 `created_at ASC, id ASC` 排好序，前端不再排序。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { history } from '@/api/ticket'
 import { TicketHistoryAction, TicketStatus, labelOf, tagTypeOf } from '@/constants/enums'
@@ -21,18 +21,30 @@ const props = defineProps<{
   ticketId: number
 }>()
 
-const items = ref<TicketHistoryVO[]>([])
+const rawItems = ref<TicketHistoryVO[]>([])
 const loading = ref(false)
 const errorText = ref('')
+
+/**
+ * 展示用的历史列表 —— **过滤掉 COMMENT**。
+ *
+ * ⚠️ §8.8 明确「写评论时同时写一条 ticket_history(COMMENT)」，
+ * 所以时间线里会混进评论记录；而评论已经在「处理记录」区块展示过了，
+ * 时间线里再出现一次就是纯噪音（同一条内容看两遍）。
+ *
+ * ⚠️ 注意区分：这里过滤的是**历史里的 COMMENT 动作**，
+ * 不是过滤 `internal` 评论（那是后端 SQL 层的事，前端绝不能碰）。
+ */
+const items = computed<TicketHistoryVO[]>(() => rawItems.value.filter((item) => item.action !== 'COMMENT'))
 
 async function load(): Promise<void> {
   loading.value = true
   errorText.value = ''
   try {
-    items.value = await history(props.ticketId)
+    rawItems.value = await history(props.ticketId)
   } catch (error) {
     errorText.value = (error as BizError).serverMessage
-    items.value = []
+    rawItems.value = []
   } finally {
     loading.value = false
   }
@@ -83,7 +95,9 @@ onMounted(load)
               <span class="history__arrow">→</span>
               {{ labelOf(TicketStatus, item.toStatus) }}
             </span>
+            <!-- fromStatus 为 null（CREATE）：渲染成「→ 待受理」，不要出现 "null →" -->
             <span v-else-if="item.toStatus" class="history__transition">
+              <span class="history__arrow">→</span>
               {{ labelOf(TicketStatus, item.toStatus) }}
             </span>
           </div>
