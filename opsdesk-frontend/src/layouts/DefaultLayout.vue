@@ -27,16 +27,45 @@ const collapsed = ref(false)
 /** 登出请求进行中 */
 const logoutLoading = ref(false)
 
-/** 当前高亮的菜单项（直接用路由路径，与 menu-item 的 index 对齐） */
-const activeMenu = computed<string>(() => route.path)
+/**
+ * 当前高亮的菜单项。
+ *
+ * 详情页（`/tickets/123`）不在菜单里，直接拿 `route.path` 匹配会一个都不高亮，
+ * 所以退化成「最长前缀匹配」：`/tickets/123` → 高亮 `/tickets`。
+ */
+const activeMenu = computed<string>(() => {
+  const leaves: string[] = []
+  const walk = (nodes: typeof MENU_TREE): void => {
+    for (const node of nodes) {
+      if (node.children) walk(node.children)
+      else leaves.push(node.path)
+    }
+  }
+  walk(MENU_TREE)
+
+  if (leaves.includes(route.path)) return route.path
+
+  const prefix = leaves
+    .filter((path) => route.path.startsWith(`${path}/`))
+    .sort((a, b) => b.length - a.length)[0]
+
+  return prefix ?? route.path
+})
 
 /** 主角色（顶栏只展示第一个） */
 const primaryRole = computed<string>(() => userStore.roles[0] ?? '')
 
-/** 面包屑：分组名 + 当前页名，两级足够 */
+/**
+ * 面包屑：分组名 + 当前页名。
+ *
+ * 用 `activeMenu`（已做过前缀匹配）去找分组，而不是 `route.path` ——
+ * 详情页 `/tickets/123` 不在菜单里，直接比 `route.path` 会找不到分组，只剩一个孤零零的页名。
+ */
 const breadcrumbs = computed<string[]>(() => {
   const list: string[] = []
-  const group = MENU_TREE.find((node) => node.children?.some((child) => child.path === route.path))
+  const group = MENU_TREE.find((node) =>
+    node.children?.some((child) => child.path === activeMenu.value),
+  )
   if (group) list.push(group.title)
   if (route.meta.title) list.push(route.meta.title)
   return list

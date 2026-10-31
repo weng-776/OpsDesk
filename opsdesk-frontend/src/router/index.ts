@@ -60,7 +60,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'tickets',
         name: 'TicketMine',
-        component: PlaceholderPage,
+        component: () => import('@/views/ticket/TicketList.vue'),
         meta: { title: '我的工单', menuPerm: 'menu:ticket:mine' },
       },
       {
@@ -70,11 +70,26 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '提交工单', menuPerm: 'menu:ticket:create' },
       },
       {
-        // 字面量段优先于未来的 /tickets/:id，不会被详情页吃掉
         path: 'tickets/manage',
         name: 'TicketManage',
         component: PlaceholderPage,
         meta: { title: '工单管理', menuPerm: 'menu:ticket:manage' },
+      },
+      {
+        /**
+         * 工单详情（F7-06 实现页面）。
+         *
+         * ⚠️ **刻意不设 `menuPerm`**：详情页不在菜单里，而且「我的工单」「待受理池」
+         * 「工单管理」三个入口都会跳到这里，而 AGENT 并不持有 `menu:ticket:mine` ——
+         * 挂任何一个菜单码都会把另一拨人挡在门外。
+         *
+         * 真正的边界在后端：`GET /api/tickets/{id}` 会做数据范围校验，
+         * 看不到的工单返回 40301。前端放行 URL 不等于能看到数据。
+         */
+        path: 'tickets/:id',
+        name: 'TicketDetail',
+        component: PlaceholderPage,
+        meta: { title: '工单详情' },
       },
       {
         path: 'pool',
