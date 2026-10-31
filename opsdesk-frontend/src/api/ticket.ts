@@ -6,7 +6,18 @@
 
 import { request } from '@/utils/request'
 import type { PageResult } from '@/types/common'
-import type { TicketCreatePayload, TicketCreatedVO, TicketListVO, TicketQueryParams } from '@/types/ticket'
+import type {
+  AttachmentUploadVO,
+  AttachmentVO,
+  CommentCreatePayload,
+  TicketCommentVO,
+  TicketCreatePayload,
+  TicketCreatedVO,
+  TicketDetailVO,
+  TicketHistoryVO,
+  TicketListVO,
+  TicketQueryParams,
+} from '@/types/ticket'
 
 /**
  * 我的工单（`GET /api/tickets/mine`）。
@@ -57,5 +68,100 @@ export function create(
     // 而创建场景下它的真实含义是「同一请求正在处理中，请勿重复提交」，
     // 后端原文比通用文案准确，所以这里关掉自动弹窗。
     silent: true,
+  })
+}
+
+// ==================== 详情页（F7-06） ====================
+
+/**
+ * 工单详情（`GET /api/tickets/{id}`）。
+ *
+ * 权限 `ticket:detail`。失败要区分两种：
+ * - `40400` 工单不存在
+ * - `40301` **存在但你看不到**（后端刻意先查存在性再判数据范围，防止用状态码探测 id）
+ *
+ * 所以页面**不能**一律说「工单不存在」。
+ */
+export function detail(id: number): Promise<TicketDetailVO> {
+  return request<TicketDetailVO>({ url: `/tickets/${id}`, method: 'get' })
+}
+
+/**
+ * 工单历史（`GET /api/tickets/{id}/history`）。
+ *
+ * ⚠️ 返回**数组不分页**，后端已按 `created_at ASC, id ASC` 排好，前端不要再排序。
+ */
+export function history(id: number): Promise<TicketHistoryVO[]> {
+  return request<TicketHistoryVO[]>({ url: `/tickets/${id}/history`, method: 'get' })
+}
+
+/**
+ * 评论列表（`GET /api/tickets/{id}/comments`）。
+ *
+ * ⚠️ 这个接口是**分页**的（默认 10 条/页），和附件/历史不一样。
+ * ⚠️ `internal = true` 的评论 EMPLOYEE 查不到（后端 SQL 层过滤），前端不要再过滤。
+ */
+export function comments(
+  id: number,
+  params: { page?: number; size?: number } = {},
+): Promise<PageResult<TicketCommentVO>> {
+  return request<PageResult<TicketCommentVO>>({
+    url: `/tickets/${id}/comments`,
+    method: 'get',
+    params,
+  })
+}
+
+/**
+ * 发表评论（`POST /api/tickets/{id}/comments`）。
+ *
+ * 权限 `ticket:comment`。`internal` 只有 AGENT / ADMIN 能设 true（EMPLOYEE 传 true 会被静默降级）。
+ */
+export function addComment(
+  id: number,
+  payload: CommentCreatePayload,
+): Promise<TicketCommentVO> {
+  return request<TicketCommentVO>({ url: `/tickets/${id}/comments`, method: 'post', data: payload })
+}
+
+/**
+ * 附件列表（`GET /api/tickets/{id}/attachments`）。
+ *
+ * ⚠️ 返回**数组不分页**（后端 `ORDER BY created_at ASC, id ASC`）。
+ */
+export function attachments(id: number): Promise<AttachmentVO[]> {
+  return request<AttachmentVO[]>({ url: `/tickets/${id}/attachments`, method: 'get' })
+}
+
+/**
+ * 上传附件（`POST /api/tickets/{id}/attachments`）。
+ *
+ * - `multipart/form-data`，字段名固定 `file`
+ * - 单文件 ≤10MB，扩展名白名单 `jpg/png/gif/pdf/txt/log/docx/xlsx`（**没有 jpeg**）
+ * - 权限 `ticket:comment`
+ *
+ * ⚠️ **不要手动设 Content-Type**：交给浏览器自动带 boundary，手写会导致后端解析失败。
+ * ⚠️ 超时要放宽：默认 10s 对 10MB 文件不够。
+ *
+ * @param onProgress 上传进度回调（0-100）
+ */
+export function uploadAttachment(
+  id: number,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<AttachmentUploadVO> {
+  const form = new FormData()
+  form.append('file', file)
+
+  return request<AttachmentUploadVO>({
+    url: `/tickets/${id}/attachments`,
+    method: 'post',
+    data: form,
+    timeout: 60000,
+    onUploadProgress: (event) => {
+      if (onProgress && event.total) {
+        onProgress(Math.round((event.loaded / event.total) * 100))
+      }
+    },
   })
 }

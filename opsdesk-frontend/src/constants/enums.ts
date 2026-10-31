@@ -74,6 +74,28 @@ export const SlaState = [
   { value: 'BREACHED', label: '已超时', type: 'danger' },
 ] as const satisfies readonly EnumItem[]
 
+/**
+ * 工单历史动作（13 种）—— 时间线展示用。
+ *
+ * 码值与后端 `com.opsdesk.common.enums.TicketHistoryAction` 逐项对齐。
+ * ⚠️ `CREATE` 动作的 `fromStatus` 为 `null`（没有来源状态），渲染时要兜住。
+ */
+export const TicketHistoryAction = [
+  { value: 'CREATE', label: '创建', type: 'info' },
+  { value: 'ASSIGN', label: '分派', type: 'primary' },
+  { value: 'TRANSFER', label: '转派', type: 'primary' },
+  { value: 'ACCEPT', label: '受理', type: 'primary' },
+  { value: 'START', label: '开始处理', type: 'primary' },
+  { value: 'HOLD', label: '挂起', type: 'warning' },
+  { value: 'RESUME', label: '恢复', type: 'primary' },
+  { value: 'RESOLVE', label: '标记解决', type: 'success' },
+  { value: 'CLOSE', label: '关闭', type: 'success' },
+  { value: 'REJECT', label: '驳回重新打开', type: 'danger' },
+  { value: 'CANCEL', label: '撤销', type: 'info' },
+  { value: 'FORCE_CLOSE', label: '强制关闭', type: 'danger' },
+  { value: 'COMMENT', label: '评论', type: 'info' },
+] as const satisfies readonly EnumItem[]
+
 // ==================== 知识库 / 通知 ====================
 
 /** 知识文档解析状态（3 种） */
@@ -108,6 +130,27 @@ export const DataScope = [
   { value: 'ASSIGNED', label: '分配给本人', type: 'primary' },
   { value: 'DEPARTMENT', label: '本部门含子部门', type: 'warning' },
   { value: 'ALL', label: '全部数据', type: 'danger' },
+] as const satisfies readonly EnumItem[]
+
+/**
+ * 工单流转动作（`TicketDetailVO.canOperate` 的取值）。
+ *
+ * ⚠️ 这里的 value 是**接口路径的动作名**（小写、下划线转连字符），
+ * 不是 `TicketHistoryAction` 的枚举名 —— 两套编码，别混用。
+ * 后端 `TicketStateMachine.availableActions` 算出，已综合「状态可流转 + 角色满足 + 前置条件」。
+ */
+export const TicketOperation = [
+  { value: 'assign', label: '分派', type: 'primary' },
+  { value: 'accept', label: '受理', type: 'primary' },
+  { value: 'start', label: '开始处理', type: 'primary' },
+  { value: 'transfer', label: '转派', type: 'primary' },
+  { value: 'hold', label: '挂起', type: 'warning' },
+  { value: 'resume', label: '恢复', type: 'primary' },
+  { value: 'resolve', label: '标记解决', type: 'success' },
+  { value: 'close', label: '关闭', type: 'success' },
+  { value: 'reject', label: '驳回', type: 'danger' },
+  { value: 'cancel', label: '撤销', type: 'info' },
+  { value: 'force-close', label: '强制关闭', type: 'danger' },
 ] as const satisfies readonly EnumItem[]
 
 // ==================== 工具函数 ====================
@@ -152,6 +195,8 @@ export type SlaStateValue = (typeof SlaState)[number]['value']
 export type KnowledgeDocStatusValue = (typeof KnowledgeDocStatus)[number]['value']
 /** 通知类型取值联合 */
 export type NotificationTypeValue = (typeof NotificationType)[number]['value']
+/** 历史动作取值联合 */
+export type TicketHistoryActionValue = (typeof TicketHistoryAction)[number]['value']
 /** 角色取值联合 */
 export type RoleValue = (typeof Role)[number]['value']
 /** 数据范围取值联合 */

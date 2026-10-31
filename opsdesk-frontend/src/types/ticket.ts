@@ -12,7 +12,9 @@
 import type {
   SlaStateValue,
   TicketCategoryValue,
+  TicketHistoryActionValue,
   TicketPriorityValue,
+  TicketSourceValue,
   TicketStatusValue,
   TicketTypeValue,
 } from '@/constants/enums'
@@ -103,4 +105,137 @@ export interface TicketCreatedVO {
   id: number
   /** 工单号：OD + yyyyMMdd + 5 位日序列，如 OD2026101000001 */
   ticketNo: string
+}
+
+/**
+ * 工单详情（`GET /api/tickets/{id}`）。
+ *
+ * 后端 `TicketDetailVO extends TicketListVO`，所以列表的 12 个字段全都有，
+ * 这里再追加 16 个详情独有字段。
+ *
+ * ⚠️ **没有 `attachments` 字段**，也**没有 `aiAnalysis` 字段**（后者后端还没做）：
+ * 附件必须单独调 `GET /api/tickets/{id}/attachments`。
+ */
+export interface TicketDetailVO extends TicketListVO {
+  /** 问题描述 */
+  description: string
+  /** 来源：WEB / AI_ASSISTANT / ADMIN */
+  source: TicketSourceValue
+  /** 创建人 ID */
+  creatorId: number
+  /** 创建人所属部门 ID（创建时快照） */
+  departmentId: number | null
+  /** 处理人 ID；未分派为 null */
+  assigneeId: number | null
+  /** 创建人部门名称 */
+  departmentName: string | null
+  /** 创建时适用的 SLA 策略版本 id */
+  slaPolicyId: number | null
+  /** 响应截止时间 */
+  responseDeadline: string | null
+  /** 首次受理时间；未受理为 null */
+  firstResponseAt: string | null
+  /** 响应 SLA 状态 */
+  slaResponseState: SlaStateValue
+  /** 累计暂停时长（分钟） */
+  slaPausedMinutes: number
+  /** 重新打开次数 */
+  reopenCount: number
+  /** 撤销原因；仅 CANCELLED 时有值 */
+  cancelReason: string | null
+  /** 进入 WAITING_CONFIRM 的时间 */
+  resolvedAt: string | null
+  /** 关闭时间 */
+  closedAt: string | null
+  /**
+   * 当前用户可执行的流转动作名，如 `['assign', 'cancel']`。
+   *
+   * ⚠️ **不是安全边界**：只用于渲染按钮，每个流转接口仍独立校验权限 + 状态 + 数据范围。
+   * 本单（F7-06）只做只读展示，按钮由 F8-02 接入。
+   */
+  canOperate: string[]
+}
+
+/**
+ * 工单历史（`GET /api/tickets/{id}/history`）。
+ *
+ * ⚠️ 后端返回的是**数组，不分页**，且已按 `created_at ASC, id ASC` 排好序。
+ */
+export interface TicketHistoryVO {
+  /** 记录 ID */
+  id: number
+  /** 操作人 ID */
+  operatorId: number
+  /** 操作人姓名 */
+  operatorName: string
+  /** 动作 */
+  action: TicketHistoryActionValue
+  /** 变更前状态；`CREATE` 动作为 **null** */
+  fromStatus: TicketStatusValue | null
+  /** 变更后状态 */
+  toStatus: TicketStatusValue | null
+  /** 备注 */
+  remark: string | null
+  /** 时间 */
+  createdAt: string
+}
+
+/**
+ * 工单评论（`GET /api/tickets/{id}/comments` 的列表项）。
+ *
+ * ⚠️ `internal` 为 true 的评论，EMPLOYEE **在后端 SQL 层就被过滤掉了**，
+ * 前端不需要也不应该再做一次过滤。
+ */
+export interface TicketCommentVO {
+  /** 评论 ID */
+  id: number
+  /** 评论人 ID */
+  userId: number
+  /** 评论人姓名 */
+  userName: string
+  /** 内容 */
+  content: string
+  /** 是否仅 IT 内部可见 */
+  internal: boolean
+  /** 时间 */
+  createdAt: string
+}
+
+/** 发表评论入参（`POST /api/tickets/{id}/comments`） */
+export interface CommentCreatePayload {
+  /** 内容，≤2000 */
+  content: string
+  /**
+   * 是否仅 IT 内部可见。
+   *
+   * ⚠️ 只有 AGENT / ADMIN 能设为 true；EMPLOYEE 传 true 会被后端**静默降级**为 false。
+   * 前端本来就不给员工这个开关。
+   */
+  internal?: boolean
+}
+
+/** 附件（`GET /api/tickets/{id}/attachments` 的列表项） */
+export interface AttachmentVO {
+  /** 附件 ID（下载接口的入参） */
+  id: number
+  /** 原始文件名 */
+  fileName: string
+  /** 字节数 */
+  fileSize: number
+  /** MIME */
+  contentType: string | null
+  /** 上传人姓名 */
+  uploaderName: string
+  /** 上传时间 */
+  createdAt: string
+}
+
+/** 附件上传响应（`POST /api/tickets/{id}/attachments`）—— 只有 3 个字段 */
+export interface AttachmentUploadVO {
+  /** 附件 ID */
+  id: number
+  /** 原始文件名 */
+  fileName: string
+  /** 字节数 */
+  fileSize: number
 }

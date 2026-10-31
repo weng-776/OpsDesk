@@ -88,7 +88,7 @@ const routes: RouteRecordRaw[] = [
          */
         path: 'tickets/:id',
         name: 'TicketDetail',
-        component: PlaceholderPage,
+        component: () => import('@/views/ticket/TicketDetail.vue'),
         meta: { title: '工单详情' },
       },
       {
